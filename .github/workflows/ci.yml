@@ -1,0 +1,124 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Safety gates. These protect the invariants that keep Silt from destroying
+  # user data. They must fail loudly, and they must actually inspect every file.
+  # ---------------------------------------------------------------------------
+  safety-gates:
+    name: Safety gates
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # NOTE: This gate previously used `Select-String -Path 'src/**/*.cs'`.
+      # PowerShell provider wildcards DO NOT implement recursive `**` — it behaves
+      # as a single-segment `*`. That silently exempted every subdirectory from the
+      # check, so the gate passed while inspecting a fraction of the codebase.
+      # Always enumerate with Get-ChildItem -Recurse and pipe into Select-String.
+      - name: Only SandboxedFileSystem may mutate the filesystem
+        shell: pwsh
+        run: |
+          $pattern = 'File\.Delete|Directory\.Delete|File\.Move|File\.Copy|File\.Create|File\.WriteAllBytes|FileInfo\.Delete|NtSetInformationFile|SHFileOperation'
+          $files = Get-ChildItem -Path src -Recurse -Filter *.cs -File |
+                   Where-Object { $_.FullName -notmatch '\\(bin|obj)\\' } |
+                   Where-Object { $_.Name -ne 'SandboxedFileSystem.cs' }
+
+          Write-Host "Scanning $($files.Count) source files..."
+          if ($files.Count -eq 0) {
+            Write-Host "::notice::No source files yet — gate is a no-op at this stage."
+            exit 0
+          }
+
+          $hits = $files | Select-String -Pattern $pattern
+          if ($hits) {
+            Write-Host "::error::Filesystem mutation found outside SandboxedFileSystem:"
+            $hits | ForEach-Object { Write-Host "  $($_.Path):$($_.LineNumber)  $($_.Line.Trim())" }
+            exit 1
+          }
+          Write-Host "OK - no filesystem mutation outside the funnel."
+
+      - name: No TCP listener anywhere
+        shell: pwsh
+        run: |
+          # Silt's API is in-process and reached via WebResourceRequested interception.
+          # A TCP listener — even on loopback — is reachable by any local process and by
+          # any web page in any browser. There is no legitimate reason for one to exist.
+          $files = Get-ChildItem -Path src -Recurse -Filter *.cs -File |
+                   Where-Object { $_.FullName -notmatch '\\(bin|obj)\\' }
+          if ($files.Count -eq 0) { exit 0 }
+
+          $hits = $files | Select-String -Pattern 'ListenLocalhost|ListenAnyIP|UseUrls|HttpListener|TcpListener'
+          if ($hits) {
+            Write-Host "::error::TCP listener found:"
+            $hits | ForEach-Object { Write-Host "  $($_.Path):$($_.LineNumber)  $($_.Line.Trim())" }
+            exit 1
+          }
+          Write-Host "OK - no TCP listener."
+
+  build-test:
+    name: Build & test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore --configuration Release
+
+      # Destructive tests are excluded here and everywhere by default. They require a
+      # scratch VHDX and SILT_DESTRUCTIVE_TESTS=1, and they run in a dedicated workflow.
+      #
+      # xUnit v3 runs on Microsoft.Testing.Platform, whose filter syntax differs from
+      # VSTest's. Verify this filter is actually HONOURED rather than silently ignored —
+      # a silently-ignored filter here would run destructive tests against the runner.
+      - name: Test
+        run: dotnet test --no-build --configuration Release --filter "Category!=Destructive"
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build

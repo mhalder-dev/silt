@@ -1,0 +1,35 @@
+<Project>
+
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <AnalysisLevel>latest-Recommended</AnalysisLevel>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <InvariantGlobalization>false</InvariantGlobalization>
+    <!--
+      InvariantGlobalization is deliberately FALSE.
+
+      The safety layer matches filenames against a personal-document lexicon that includes
+      non-ASCII terms (Bengali/Arabic script among them). Under invariant globalization,
+      culture-aware casing and comparison for non-ASCII text does not behave as expected, so
+      a non-Latin filename that should be protected can silently fail to match.
+
+      Because that check is protective-only, a miss is not a visible error — it is a folder
+      of scanned identity documents quietly losing its protection. That is precisely the
+      failure mode the check exists to prevent. Do not set this to true for a startup-time
+      or binary-size win.
+    -->
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <Product>Silt</Product>
+    <Company>mhalder-dev</Company>
+    <Authors>mhalder-dev</Authors>
+    <RepositoryUrl>https://github.com/mhalder-dev/silt</RepositoryUrl>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+  </PropertyGroup>
+
+</Project>

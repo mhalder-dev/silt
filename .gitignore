@@ -1,0 +1,40 @@
+# .NET
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+publish/
+*.user
+*.suo
+.vs/
+artifacts/
+TestResults/
+*.coverage
+*.trx
+*.received.*
+
+# Node
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+npm-debug.log*
+
+# Silt local state (never commit a real scan index or journal)
+*.siltdb
+*.siltsnap
+/scratch/
+
+# Test scratch volumes
+*.vhdx
+
+# Editors
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store
