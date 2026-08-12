@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Silt.Safety is the path jail and the compiled denylist.
+
+    It is deliberately net10.0 (NOT net10.0-windows) and deliberately has ZERO
+    dependencies - no ProjectReference, no PackageReference, no P/Invoke, no I/O.
+    It is a pure predicate library.
+
+    Two reasons:
+      1. It can be property-tested exhaustively on a Linux CI runner in seconds.
+      2. Nothing can be smuggled into it. The moment this project needs a Windows
+         API, the design has gone wrong - move that code to Silt.Core instead.
+
+    NOTE the dependency direction: net10.0-windows projects may reference this one.
+    This one may NEVER reference them - NuGet fails with NU1201, and the failure is
+    correct. Silt.Core -> Silt.Safety. Never the reverse.
+
+    WARNING: the Ubuntu CI run does NOT validate Windows path semantics. On Linux,
+    '\' is a legal filename character and there is no drive concept, so
+    Path.GetFullPath(@"C:\a\..\b") yields a single filename and every Windows-specific
+    bypass case (UNC, \\?\, \\.\, 8.3 short names, mixed separators) degrades to noise.
+    The Windows test run is the one that counts.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+  </PropertyGroup>
+
+</Project>

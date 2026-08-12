@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    <!--
+      Content-Security-Policy.
+
+      Scanned filenames are attacker-controlled input: a directory can legitimately contain
+      a file named `<img src=x onerror=...>`. React escapes text nodes, but not
+      dangerouslySetInnerHTML, not URL-typed props, and not routing. A renderer compromise
+      here is not a defacement - the renderer talks to the cleanup engine.
+
+      - No 'unsafe-eval' anywhere.
+      - style-src allows 'unsafe-inline' only because React sets inline styles; scripts do not
+        get the same latitude.
+      - connect-src is 'self' only: the app talks to its in-process host, never the network.
+      - Silt does not phone home. frame-ancestors 'none' and no remote origins, ever.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="
+        default-src 'self';
+        script-src 'self';
+        style-src 'self' 'unsafe-inline';
+        img-src 'self' data: blob:;
+        font-src 'self';
+        connect-src 'self';
+        object-src 'none';
+        base-uri 'none';
+        form-action 'none';
+        frame-ancestors 'none';
+      "
+    />
+
+    <title>Silt</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

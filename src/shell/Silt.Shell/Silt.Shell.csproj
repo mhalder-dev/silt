@@ -1,0 +1,80 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Silt.Shell - the WPF host. Runs asInvoker and is NEVER elevated.
+
+    v1 has no privileged helper at all: every byte worth reclaiming on a normal
+    machine is user-owned, so the delete engine runs under the user's own token and
+    the blast radius is bounded to what the user could do by hand in Explorer.
+
+    Do not add <requestedExecutionLevel level="requireAdministrator"> to the manifest.
+    Elevating the shell would:
+      - hand an admin token to the code path that talks to the renderer,
+      - break drag-and-drop from Explorer (UIPI blocks lower-to-higher integrity),
+      - and leave a high-integrity WebView2 user data folder that a later normal
+        launch then contends for at medium integrity.
+  -->
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <AssemblyName>Silt</AssemblyName>
+    <RootNamespace>Silt.Shell</RootNamespace>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <!--
+      Self-contained is REQUIRED, not an optimisation.
+
+      Verified on the development machine before this was written: a clean Windows 11
+      install had Microsoft.NETCore.App 10.x but Microsoft.WindowsDesktop.App 9.0.14
+      ONLY. A framework-dependent WPF build therefore fails to launch on a clean
+      machine with the OS runtime-missing dialog. "3 MB installer" is true only for
+      users who already have the Desktop Runtime - which is almost nobody.
+    -->
+    <SelfContained>true</SelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <!--
+      Native AOT is deliberately NOT used. Microsoft.AspNetCore.OpenApi builds its
+      schemas by reflection and emits IL2026/IL3050 under PublishAot - which, with
+      TreatWarningsAsErrors, fails the build outright.
+    -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\backend\Silt.Api\Silt.Api.csproj" />
+    <ProjectReference Include="..\..\backend\Silt.Core\Silt.Core.csproj" />
+    <ProjectReference Include="..\..\backend\Silt.Safety\Silt.Safety.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4129.50" />
+  </ItemGroup>
+
+  <!--
+    Copy the built SPA into the output as wwwroot, which MainWindow maps as the WebView2
+    virtual host.
+
+    This deliberately does NOT run `npm run build` itself. Coupling the .NET build to npm
+    would mean every `dotnet build` pays a node install/build, and CI already builds the
+    frontend in its own job. If dist/ is absent the app starts and reports exactly what to
+    run, rather than failing the build for someone who only touched C#.
+  -->
+  <Target Name="CopyFrontend" AfterTargets="Build">
+    <ItemGroup>
+      <FrontendAssets Include="$(MSBuildThisFileDirectory)..\..\frontend\dist\**\*.*" />
+    </ItemGroup>
+    <Message Importance="high"
+             Text="Frontend dist/ not found - the app will show build instructions on launch."
+             Condition="'@(FrontendAssets)' == ''" />
+    <Copy SourceFiles="@(FrontendAssets)"
+          DestinationFiles="@(FrontendAssets->'$(OutDir)wwwroot\%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true"
+          Condition="'@(FrontendAssets)' != ''" />
+  </Target>
+
+</Project>

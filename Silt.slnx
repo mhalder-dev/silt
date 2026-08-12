@@ -1,0 +1,15 @@
+<Solution>
+  <Folder Name="/src/" />
+  <Folder Name="/src/backend/">
+    <Project Path="src/backend/Silt.Api/Silt.Api.csproj" />
+    <Project Path="src/backend/Silt.Core/Silt.Core.csproj" />
+    <Project Path="src/backend/Silt.Safety/Silt.Safety.csproj" />
+  </Folder>
+  <Folder Name="/src/shell/">
+    <Project Path="src/shell/Silt.Shell/Silt.Shell.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Silt.Core.Tests/Silt.Core.Tests.csproj" />
+    <Project Path="tests/Silt.Safety.Tests/Silt.Safety.Tests.csproj" />
+  </Folder>
+</Solution>

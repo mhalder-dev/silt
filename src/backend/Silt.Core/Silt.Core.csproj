@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Silt.Core - scanning, per-app attribution, snapshots, rules, and planning.
+
+    Windows-targeted because it owns every platform API the product depends on:
+    GetFileInformationByHandleEx, reparse-tag inspection, IFileOperation (COM/STA),
+    and later the raw $MFT reader.
+
+    SandboxedFileSystem lives HERE, not in Silt.Safety - it needs COM and P/Invoke,
+    which would contaminate the pure, Linux-testable jail.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>false</UseWindowsForms>
+    <UseWPF>false</UseWPF>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Silt.Safety\Silt.Safety.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -161,10 +161,38 @@ steady state at **450–800 MB** (browser + GPU + renderer + utility processes �
 three full-viewport canvases at DPR 2 on 4K ≈ 100 MB of backing store; WPF shell 60–80 MB).
 On a 16 GB machine currently showing ~2.66 GB available, that is real.
 
+> ### ⚠️ MEASURED AT M0 — 470.5 MB, over budget, doing nothing
+>
+> Measured on 2026-08-13 against the actual M0 build, displaying a **static page**: no scan
+> index, no treemap, no canvases, no data.
+>
+> | Process | Working set |
+> |---|---|
+> | `msedgewebview2.exe` (browser) | 132.2 MB |
+> | `Silt.exe` (WPF shell) | 110.6 MB |
+> | `msedgewebview2.exe` (gpu) | 95.5 MB |
+> | `msedgewebview2.exe` (renderer) | 61.1 MB |
+> | `msedgewebview2.exe` ×3 (utility/crashpad) | 71.1 MB |
+> | **Total — 7 processes** | **470.5 MB** |
+>
+> The 400 MB budget is **already violated before any feature exists.** Review predicted
+> 450–800 MB and was right. This is the cost of the WebView2 + React shell, accepted
+> knowingly, and it is now a measured fact rather than an estimate.
+>
+> **Consequences — these stop being optimizations and become requirements:**
+> - The single-canvas rule (§ below) is mandatory. Three full-viewport canvases at DPR 2 on
+>   4K would add ~100 MB of backing store on top of this.
+> - Releasing the index on minimize is mandatory, not a nice-to-have.
+> - **Re-measure at M1, M2, and M5.** If the trend line puts a real workload past ~700 MB,
+>   the shell choice must be revisited — a disk tool that costs 5 % of a 16 GB machine's RAM
+>   to report on disk usage has undermined its own premise.
+> - The budget below is retained as a *target to drive back down to*, not a claim of
+>   compliance. Do not quietly raise it to match whatever gets measured.
+
 Mitigations that **actually work** (`--js-flags="--max-old-space-size"` is a placebo — it
 reserves nothing, frees nothing, and merely converts a large heap into a hard OOM crash):
 
-- **Budget: ≤400 MB steady state.** Enforced by a test, not a hope.
+- **Budget: ≤400 MB steady state.** Currently **exceeded** — see the measurement above.
 - **One canvas, not three.** Picking via a spatial index (interval tree over the squarified
   layout) computed in JS — not a second readback canvas. Avoids the `getImageData`
   premultiplication/antialiasing id-collision bug review identified, *and* the backing store.
