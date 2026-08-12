@@ -22,6 +22,19 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyName>Silt</AssemblyName>
     <RootNamespace>Silt.Shell</RootNamespace>
+
+    <!--
+      RuntimeIdentifiers (PLURAL) must be declared unconditionally so that `dotnet restore`
+      writes a win-x64 target into project.assets.json regardless of configuration.
+
+      Without it, restore runs under the default configuration (no RID), and a later
+      no-restore Release build - which DOES set a RID - fails with NETSDK1047
+      "Assets file doesn't have a target for 'net10.0-windows/win-x64'".
+
+      This does not reproduce locally when each configuration is restored as it is built.
+      It reproduces in CI, which restores once and then builds Release.
+    -->
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">
