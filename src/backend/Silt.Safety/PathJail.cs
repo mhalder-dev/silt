@@ -60,7 +60,17 @@ public static class PathJail
             return true;
         }
 
-        string prefix = canonicalRoot + Path.DirectorySeparatorChar;
+        // The separator must not be appended blindly.
+        //
+        // Path.TrimEndingDirectorySeparator does not trim the separator from a volume root:
+        // "C:\" stays "C:\", by design, because trimming would change its meaning. Appending
+        // another separator then produces "C:\\", which no real path starts with, so every
+        // containment test against a drive root returned false — failing OPEN on the widest
+        // possible root. A denylist entry protecting an entire volume protected nothing.
+        string prefix = canonicalRoot.EndsWith(Path.DirectorySeparatorChar)
+            ? canonicalRoot
+            : canonicalRoot + Path.DirectorySeparatorChar;
+
         return canonicalCandidate.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
     }
 

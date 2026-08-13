@@ -39,6 +39,28 @@ public sealed class PathJailTests
         Assert.False(PathJail.IsContained(root, candidate));
     }
 
+    [Theory]
+    [InlineData(@"C:\", @"C:\Windows")]
+    [InlineData(@"C:\", @"C:\Windows\System32\kernel32.dll")]
+    [InlineData(@"C:\", @"C:\")]
+    [InlineData(@"D:\", @"D:\projects\silt")]
+    public void IsContained_HandlesAVolumeRootAsTheRoot(string root, string candidate)
+    {
+        // Regression, and a failure that was open rather than closed.
+        //
+        // Path.TrimEndingDirectorySeparator deliberately leaves "C:\" intact, so naively
+        // appending a separator yielded the prefix "C:\\" and nothing was ever contained in
+        // a drive root. A denylist entry covering an entire volume silently protected
+        // nothing at all.
+        Assert.True(PathJail.IsContained(root, candidate));
+    }
+
+    [Fact]
+    public void IsContained_StillSeparatesDifferentVolumes()
+    {
+        Assert.False(PathJail.IsContained(@"C:\", @"D:\Windows"));
+    }
+
     [Fact]
     public void IsContained_TreatsInternalTraversalThatStaysInsideAsContained()
     {

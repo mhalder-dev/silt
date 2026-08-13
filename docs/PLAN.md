@@ -427,7 +427,7 @@ optional, and 2–4 h sessions on a multi-project codebase lose 20–30 % to re-
 | ~~**M1**~~ ✅ | BFS scanner + reconciliation waterfall + folder tree UI | 40 h | done |
 | ~~**M2**~~ ✅ | **Per-app attribution** — the differentiator | 30 h | done |
 | ~~**M3**~~ ✅ | Snapshots + growth diff + "what grew this week" | 30 h | done |
-| **M4** | Safety core + dry-run + the 6 rules + Recycle Bin execute | 60 h | wk 24 |
+| **M4** ◐ | Safety core + dry-run + the 6 rules + Recycle Bin execute | 60 h | safety + dry-run done; **execute not built** |
 | **M5** | Treemap (single canvas, spatial-index picking) | 30 h | wk 28 |
 | **M6** | Installer, self-contained publish, GitHub Releases, docs | 25 h | wk 31 |
 
@@ -490,6 +490,45 @@ Two things that verification immediately caught:
 Note for M5: `worker-src` is absent from the CSP, so it falls back to `script-src 'self'` and
 blob-backed Web Workers are blocked. The production bundle creates none today (verified), but
 moving treemap layout into a worker will require explicitly widening the policy.
+
+## 5b. M4 progress — safety first, deletion last
+
+Built, in this order, deliberately:
+
+1. **`Denylist`** (`Silt.Safety`, pure) — locations and file kinds that are never deletable.
+   No override exists: no flag, no force parameter, and no field in the wire format that
+   could express one.
+2. **`WindowsProtectedPaths`** — resolves 21 protected locations on this machine, including
+   the Credential Manager, Vault, DPAPI and certificate stores that review found missing.
+3. **`StartupCanary`** — asserts the denylist works, deriving its paths from **environment
+   variables** while the denylist resolves through the **known-folder API**. That asymmetry
+   is the point: a canary sharing the denylist's resolver agrees with it even when both are
+   wrong. It also asserts in the *opposite* direction, since a denylist that refuses
+   everything would pass every "must refuse" check while making the product inert.
+4. **`CleanupRule`** — Rule 0 enforced in the constructor. A rule that cannot name how its
+   data comes back cannot be *constructed*, so it can never be executed.
+5. **`RuleCatalog`** — the six rules, as data.
+6. **`CleanupPlanner`** — dry-run. Every candidate is checked against the denylist
+   *individually, after expansion*, so a rule cannot widen its own reach.
+
+**There is still no capability to delete anything.** `CleanupPlanner` produces a description,
+not an instruction, and a test asserts the filesystem is byte-identical before and after
+planning. The executor, journal and Recycle Bin integration are the remaining M4 work.
+
+### Measured dry-run on the development machine
+
+3.63 GiB across 239 items in 6.68 s. Temp contributed only 0.03 GiB with **747 items
+excluded** — it had been cleared earlier the same day, and the 7-day age test correctly
+disqualified everything written since, which is the rule behaving exactly as intended.
+
+### A fail-open bug this phase caught
+
+`PathJail.IsContained` returned **false for every path inside a volume root**.
+`Path.TrimEndingDirectorySeparator` deliberately leaves `C:\` intact, so appending a
+separator produced the prefix `C:\\`, which nothing matches. A denylist entry protecting an
+entire volume therefore protected nothing. It failed *open*, on the widest possible root,
+in the primitive the whole cleanup engine depends on — and it was found only because the
+canary asserts in both directions. Fixed, with a regression test.
 
 ## 6. Testing destructive operations safely
 
