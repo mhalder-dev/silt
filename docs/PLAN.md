@@ -211,6 +211,19 @@ On a 16 GB machine currently showing ~2.66 GB available, that is real.
 > Guarded by `BuildPath_ReconstructsFullPathAtEveryDepth` and
 > `BuildPath_DoesNotDoubleSeparatorAtAVolumeRoot` — dropping a stored path is only safe
 > while reconstruction is exact.
+>
+> #### Working-set trend
+>
+> | Milestone | Total | Shell process |
+> |---|---|---|
+> | M0 — static page | 470.5 MB | 110.6 MB |
+> | M1 — C: scan resident | 627.5 MB | 235.7 MB |
+> | **M2 — scan + attribution** | **590.0 MB** | **180.2 MB** |
+>
+> M2 went **down** despite adding a feature: the path fix reclaimed more than attribution
+> costs. Still above the 400 MB target and still WebView2-dominated (~410 MB of the 590 is
+> the six browser processes), but the trend is no longer pointing at the ~700 MB threshold.
+> Next gate: M5, when the treemap adds canvas backing stores.
 
 > **Consequences — these stop being optimizations and become requirements:**
 > - The single-canvas rule (§ below) is mandatory. Three full-viewport canvases at DPR 2 on
@@ -410,9 +423,9 @@ optional, and 2–4 h sessions on a multi-project codebase lose 20–30 % to re-
 
 | Phase | Deliverable | Est. | Cumulative |
 |---|---|---|---|
-| **M0** | Scaffold, solution builds, minimal CI green, WPF+WebView2 window renders React | 20 h | wk 3 |
-| **M1** | BFS scanner + reconciliation waterfall + folder tree UI | 40 h | wk 8 |
-| **M2** | **Per-app attribution** — the differentiator | 30 h | wk 12 |
+| ~~**M0**~~ ✅ | Scaffold, solution builds, CI green, WPF+WebView2 window renders React | 20 h | done |
+| ~~**M1**~~ ✅ | BFS scanner + reconciliation waterfall + folder tree UI | 40 h | done |
+| ~~**M2**~~ ✅ | **Per-app attribution** — the differentiator | 30 h | done |
 | **M3** | Snapshots + growth diff + "what grew this week" | 30 h | wk 16 |
 | **M4** | Safety core + dry-run + the 6 rules + Recycle Bin execute | 60 h | wk 24 |
 | **M5** | Treemap (single canvas, spatial-index picking) | 30 h | wk 28 |

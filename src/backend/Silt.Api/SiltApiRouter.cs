@@ -111,6 +111,10 @@ public sealed class SiltApiRouter(ScanService scans)
                     ? ApiResponse.Json(tree)
                     : ApiResponse.Error(404, "No such scan or path."),
 
+                "apps" => scans.GetApps(id, ParseMinimumBytes(request.Query)) is { } apps
+                    ? ApiResponse.Json(apps)
+                    : ApiResponse.Error(404, "Scan not finished, or no such scan."),
+
                 "cancel" => scans.Cancel(id)
                     ? ApiResponse.Json(new { cancelled = true })
                     : ApiResponse.Error(404, "No such scan."),
@@ -124,6 +128,21 @@ public sealed class SiltApiRouter(ScanService scans)
 
     private static ApiResponse MethodNotAllowed() =>
         ApiResponse.Error(405, "Method not allowed.");
+
+    /// <summary>
+    /// Size floor for the application list.
+    /// </summary>
+    /// <remarks>
+    /// Defaults to 50 MiB. Without a floor the list runs to hundreds of rows of runtime
+    /// stubs and extension packages, and stops being a way to find what is actually large.
+    /// </remarks>
+    private static long ParseMinimumBytes(string query)
+    {
+        const long defaultFloor = 50L * 1024 * 1024;
+
+        string? raw = GetQueryValue(query, "min");
+        return long.TryParse(raw, out long parsed) && parsed >= 0 ? parsed : defaultFloor;
+    }
 
     private static string? ReadRootFromBody(string body)
     {

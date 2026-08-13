@@ -23,4 +23,14 @@
     <ProjectReference Include="..\Silt.Safety\Silt.Safety.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!--
+      The attribution heuristics (name normalization, package-suffix stripping, prefix
+      merging) are internal because they are not a supported API surface, but they are
+      exactly the logic most likely to mis-group an application. Testing them directly is
+      worth more than keeping the assembly hermetic.
+    -->
+    <InternalsVisibleTo Include="Silt.Core.Tests" />
+  </ItemGroup>
+
 </Project>

@@ -85,6 +85,36 @@ export type ScanSummary = {
   reconciliation?: Reconciliation
 }
 
+export type AppLocationKind =
+  | 'Install'
+  | 'LocalData'
+  | 'RoamingData'
+  | 'PackageData'
+  | 'MachineData'
+
+export type AppLocation = {
+  path: string
+  allocatedBytes: number
+  fileCount: number
+  kind: AppLocationKind
+}
+
+export type AppFootprint = {
+  key: string
+  displayName: string
+  publisher?: string
+  totalAllocatedBytes: number
+  totalFileCount: number
+  isSplitAcrossLocations: boolean
+  locations: AppLocation[]
+}
+
+export type AppsResponse = {
+  apps: AppFootprint[]
+  minimumBytes: number
+  totalAttributedBytes: number
+}
+
 class ApiError extends Error {
   // Declared and assigned explicitly rather than as a constructor parameter property:
   // the tsconfig enables `erasableSyntaxOnly`, which forbids TypeScript-only syntax that
@@ -132,6 +162,11 @@ export const api = {
   getTree: (scanId: string, path?: string) =>
     request<TreeResponse>(
       `/api/scans/${scanId}/tree${path ? `?path=${encodeURIComponent(path)}` : ''}`,
+    ),
+
+  getApps: (scanId: string, minimumBytes?: number) =>
+    request<AppsResponse>(
+      `/api/scans/${scanId}/apps${minimumBytes === undefined ? '' : `?min=${minimumBytes}`}`,
     ),
 
   cancel: (scanId: string) =>

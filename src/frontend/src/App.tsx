@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   api,
+  type AppFootprint,
+  type AppsResponse,
   type Reconciliation,
   type ScanStatus,
   type ScanSummary,
@@ -205,6 +207,7 @@ function Results({ scanId }: { scanId: string }) {
   return (
     <>
       <SummaryStats summary={summary} />
+      <AppFootprints scanId={scanId} />
       {summary.reconciliation && <Waterfall r={summary.reconciliation} />}
       <TreeBrowser
         tree={tree}
@@ -213,6 +216,122 @@ function Results({ scanId }: { scanId: string }) {
         onNavigate={setPath}
       />
     </>
+  )
+}
+
+const LOCATION_LABELS: Record<string, string> = {
+  Install: 'installed',
+  LocalData: 'local data',
+  RoamingData: 'roaming data',
+  PackageData: 'store app data',
+  MachineData: 'all-users data',
+}
+
+function AppFootprints({ scanId }: { scanId: string }) {
+  const [data, setData] = useState<AppsResponse | null>(null)
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    api
+      .getApps(scanId)
+      .then(setData)
+      .catch((e: Error) => setError(e.message))
+  }, [scanId])
+
+  const toggle = (key: string) =>
+    setExpanded((previous) => {
+      const next = new Set(previous)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+
+  if (error) return <div className="error">{error}</div>
+  if (!data) return <p className="muted">Attributing space to applications…</p>
+  if (data.apps.length === 0) return null
+
+  const split = data.apps.filter((a) => a.isSplitAcrossLocations).length
+  const max = Math.max(...data.apps.map((a) => a.totalAllocatedBytes), 1)
+
+  return (
+    <section>
+      <h2 className="section-title">By application</h2>
+      <p className="muted waterfall-intro">
+        Windows scatters one application across Program Files, Local, Roaming, Packages and
+        ProgramData. {split > 0 && <>{split} of these are split across more than one place. </>}
+        Sizes below are the real totals.
+      </p>
+
+      <ul className="apps">
+        {data.apps.map((app) => (
+          <AppRow
+            key={app.key}
+            app={app}
+            max={max}
+            open={expanded.has(app.key)}
+            onToggle={() => toggle(app.key)}
+          />
+        ))}
+      </ul>
+
+      <p className="note">
+        Grouping is a heuristic. Expand any row to see exactly which folders were counted, so a
+        wrong grouping is visible rather than silently baked into the number.
+      </p>
+    </section>
+  )
+}
+
+function AppRow({
+  app,
+  max,
+  open,
+  onToggle,
+}: {
+  app: AppFootprint
+  max: number
+  open: boolean
+  onToggle: () => void
+}) {
+  return (
+    <li className={open ? 'app open' : 'app'}>
+      <button className="app-head" onClick={onToggle} aria-expanded={open}>
+        <span className="app-caret" aria-hidden="true">
+          {open ? '▾' : '▸'}
+        </span>
+        <span className="app-name">
+          {app.displayName}
+          {app.isSplitAcrossLocations && (
+            <span className="tag tag-split">{app.locations.length} places</span>
+          )}
+        </span>
+        <span className="app-size">{formatBytes(app.totalAllocatedBytes)}</span>
+      </button>
+
+      <div className="bar">
+        <div
+          className="bar-fill"
+          style={{ width: `${(app.totalAllocatedBytes / max) * 100}%` }}
+        />
+      </div>
+
+      {app.publisher && <div className="app-publisher">{app.publisher}</div>}
+
+      {open && (
+        <ul className="app-locations">
+          {app.locations.map((location) => (
+            <li key={location.path}>
+              <span className="loc-size">{formatBytes(location.allocatedBytes)}</span>
+              <span className="loc-kind">{LOCATION_LABELS[location.kind] ?? location.kind}</span>
+              <span className="loc-path" title={location.path}>
+                {location.path}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </li>
   )
 }
 

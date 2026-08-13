@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using Silt.Core.Attribution;
 using Silt.Core.Reconciliation;
 using Silt.Core.Scanning;
 
@@ -10,8 +11,13 @@ public sealed class ScanService : IDisposable
 {
     private readonly ConcurrentDictionary<string, ScanSession> _sessions = new(StringComparer.Ordinal);
     private readonly IVolumeScanner _scanner;
+    private readonly IAppAttributor _attributor;
 
-    public ScanService(IVolumeScanner? scanner = null) => _scanner = scanner ?? new BfsScanner();
+    public ScanService(IVolumeScanner? scanner = null, IAppAttributor? attributor = null)
+    {
+        _scanner = scanner ?? new BfsScanner();
+        _attributor = attributor ?? new AppAttributor();
+    }
 
     public ScanHandleDto Start(string rootPath)
     {
@@ -257,6 +263,37 @@ public sealed class ScanService : IDisposable
         }
 
         return current;
+    }
+
+    /// <summary>
+    /// Per-application footprints for a completed scan.
+    /// </summary>
+    /// <remarks>
+    /// Computed on demand rather than during the scan: attribution walks only the handful of
+    /// well-known roots, so it costs milliseconds, and keeping it out of the scan path means
+    /// a failure here can never cost the user a completed scan.
+    /// </remarks>
+    public AppsResponseDto? GetApps(string scanId, long minimumBytes)
+    {
+        if (!_sessions.TryGetValue(scanId, out ScanSession? s) || s.Result is null)
+        {
+            return null;
+        }
+
+        IReadOnlyList<AppFootprint> apps = _attributor.Attribute(s.Result, minimumBytes);
+
+        return new AppsResponseDto(
+            [.. apps.Select(a => new AppFootprintDto(
+                a.Key,
+                a.DisplayName,
+                a.Publisher,
+                a.TotalAllocatedBytes,
+                a.TotalFileCount,
+                a.IsSplitAcrossLocations,
+                [.. a.Locations.Select(l => new AppLocationDto(
+                    l.Path, l.AllocatedBytes, l.FileCount, l.Kind.ToString()))]))],
+            minimumBytes,
+            apps.Sum(a => a.TotalAllocatedBytes));
     }
 
     public bool Cancel(string scanId)

@@ -86,4 +86,24 @@ public sealed record ScanSummaryDto(
     long HardLinkBytesDeduplicated,
     ReconciliationDto? Reconciliation);
 
+public sealed record AppLocationDto(
+    string Path,
+    long AllocatedBytes,
+    long FileCount,
+    string Kind);
+
+public sealed record AppFootprintDto(
+    string Key,
+    string DisplayName,
+    string? Publisher,
+    long TotalAllocatedBytes,
+    long TotalFileCount,
+    bool IsSplitAcrossLocations,
+    IReadOnlyList<AppLocationDto> Locations);
+
+public sealed record AppsResponseDto(
+    IReadOnlyList<AppFootprintDto> Apps,
+    long MinimumBytes,
+    long TotalAttributedBytes);
+
 public sealed record ErrorDto(string Message);
