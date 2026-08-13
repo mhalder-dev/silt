@@ -179,6 +179,26 @@ On a 16 GB machine currently showing ~2.66 GB available, that is real.
 > 450–800 MB and was right. This is the cost of the WebView2 + React shell, accepted
 > knowingly, and it is now a measured fact rather than an estimate.
 >
+> ### Re-measured at M1 — 627.5 MB with a full C: scan resident
+>
+> | Process | M0 (static page) | M1 (C: scan held) |
+> |---|---|---|
+> | `Silt.exe` (shell + index) | 110.6 MB | **235.7 MB** |
+> | WebView2 (6 processes) | 359.9 MB | 391.8 MB |
+> | **Total** | **470.5 MB** | **627.5 MB** |
+>
+> The scan tree costs ~125 MB for 155,163 directories — about **840 bytes per directory**,
+> which is far more than the data warrants.
+>
+> **Cause identified:** `ScanNode` stores `FullPath` as a complete string per node. At an
+> average path length of ~80 characters that is ~160 bytes of UTF-16 per directory,
+> duplicated against a parent chain that already encodes the same information. Fix is to
+> store only `Name` and materialize the path on demand from `Parent`. Do this before M2 —
+> attribution will add per-application aggregates on top of this tree.
+>
+> 627.5 MB is inside the ~700 MB threshold below, but only just, and M2/M3 both add
+> resident state. Treat the next measurement as decisive.
+
 > **Consequences — these stop being optimizations and become requirements:**
 > - The single-canvas rule (§ below) is mandatory. Three full-viewport canvases at DPR 2 on
 >   4K would add ~100 MB of backing store on top of this.

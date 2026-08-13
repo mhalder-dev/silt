@@ -1,6 +1,8 @@
 using System.IO;
+using System.Text;
 using System.Windows;
 using Microsoft.Web.WebView2.Core;
+using Silt.Api;
 
 namespace Silt.Shell;
 
@@ -16,7 +18,7 @@ namespace Silt.Shell;
 ///   <item>An environment variable can inject an unauthenticated debugging port.</item>
 /// </list>
 /// </remarks>
-public partial class MainWindow : Window
+public partial class MainWindow : Window, IDisposable
 {
     /// <summary>
     /// Virtual host the SPA is served from. A .invalid TLD is reserved by RFC 2606 and can
@@ -27,10 +29,30 @@ public partial class MainWindow : Window
 
     private const string AppOrigin = "https://" + VirtualHost + "/";
 
+    private readonly ScanService _scans = new();
+    private readonly SiltApiRouter _router;
+    private CoreWebView2Environment? _environment;
+
     public MainWindow()
     {
         InitializeComponent();
+        _router = new SiltApiRouter(_scans);
         Loaded += async (_, _) => await InitializeBrowserAsync().ConfigureAwait(true);
+        Closed += (_, _) => Dispose();
+    }
+
+    /// <summary>
+    /// Cancels any in-flight scan and releases the scan service.
+    /// </summary>
+    /// <remarks>
+    /// A window is not usually disposable, but this one owns a service holding worker
+    /// threads and cancellation sources. Without this, closing the window while a scan of a
+    /// large volume is running would leave those workers alive until process exit.
+    /// </remarks>
+    public void Dispose()
+    {
+        _scans.Dispose();
+        GC.SuppressFinalize(this);
     }
 
     private async Task InitializeBrowserAsync()
@@ -80,11 +102,11 @@ public partial class MainWindow : Window
 
             SetStatus("Initializing WebView2...");
 
-            var environment = await CoreWebView2Environment
+            _environment = await CoreWebView2Environment
                 .CreateAsync(browserExecutableFolder: null, userDataFolder: userDataFolder)
                 .ConfigureAwait(true);
 
-            await Browser.EnsureCoreWebView2Async(environment).ConfigureAwait(true);
+            await Browser.EnsureCoreWebView2Async(_environment).ConfigureAwait(true);
 
             var core = Browser.CoreWebView2;
             var settings = core.Settings;
@@ -104,20 +126,26 @@ public partial class MainWindow : Window
             settings.AreDevToolsEnabled = false;
 #endif
 
-            // Serve the built SPA from a virtual host. DenyCors: the SPA's own origin is the
-            // only thing permitted to read these files.
-            var webRoot = Path.Combine(AppContext.BaseDirectory, "wwwroot");
-            if (!Directory.Exists(webRoot))
+            if (!Directory.Exists(StaticContent.RootDirectory))
             {
                 ShowFailure(
                     "UI assets are missing.",
-                    $"Expected the built frontend at:\n{webRoot}\n\n" +
+                    $"Expected the built frontend at:\n{StaticContent.RootDirectory}\n\n" +
                     "Run:  npm --prefix src/frontend run build");
                 return;
             }
 
-            core.SetVirtualHostNameToFolderMapping(
-                VirtualHost, webRoot, CoreWebView2HostResourceAccessKind.DenyCors);
+            // Everything - the SPA's files and the API - is served by intercepting requests
+            // to the app's own origin. Nothing listens on a socket, so no other process on
+            // the machine can reach any of it.
+            //
+            // SetVirtualHostNameToFolderMapping is deliberately NOT used: it is handled
+            // below this event, so mapping the host would stop WebResourceRequested from
+            // firing and the API could not share the origin. See StaticContent.
+            core.AddWebResourceRequestedFilter(
+                AppOrigin + "*", CoreWebView2WebResourceContext.All);
+            core.WebResourceRequested += OnResourceRequested;
+            Diagnostics.Log($"serving from {StaticContent.RootDirectory}");
 
             // -----------------------------------------------------------------
             // Navigation lockdown.
@@ -159,6 +187,104 @@ public partial class MainWindow : Window
             ShowFailure("Silt could not start.", ex.ToString());
         }
     }
+
+    /// <summary>
+    /// Serves the API by intercepting the renderer's own fetch calls.
+    /// </summary>
+    /// <remarks>
+    /// Runs synchronously on the UI thread, which is safe only because every handler returns
+    /// immediately: starting a scan hands it to a background task and returns a handle, and
+    /// every other call reads already-computed state. If a handler ever needs to block, take
+    /// a deferral rather than stalling the message loop.
+    /// </remarks>
+    private void OnResourceRequested(object? sender, CoreWebView2WebResourceRequestedEventArgs e)
+    {
+        if (_environment is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var uri = new Uri(e.Request.Uri);
+
+            e.Response = uri.AbsolutePath.StartsWith("/api/", StringComparison.OrdinalIgnoreCase)
+                ? ServeApi(e, uri)
+                : ServeFile(uri);
+        }
+        catch (Exception ex) when (ex is IOException or UriFormatException or ArgumentException)
+        {
+            Diagnostics.Log($"ERR {e.Request.Uri}: {ex.Message}");
+            e.Response = BuildResponse(_environment, ApiResponse.Error(500, ex.Message));
+        }
+    }
+
+    private CoreWebView2WebResourceResponse ServeApi(
+        CoreWebView2WebResourceRequestedEventArgs e, Uri uri)
+    {
+        string body = string.Empty;
+        if (e.Request.Content is { } content)
+        {
+            using var reader = new StreamReader(content, Encoding.UTF8);
+            body = reader.ReadToEnd();
+        }
+
+        ApiResponse response = _router.Handle(
+            new ApiRequest(e.Request.Method, uri.AbsolutePath, uri.Query, body));
+
+        Diagnostics.Log($"API {e.Request.Method} {uri.PathAndQuery} -> {response.StatusCode}");
+        return BuildResponse(_environment!, response);
+    }
+
+    private CoreWebView2WebResourceResponse ServeFile(Uri uri)
+    {
+        string? file = StaticContent.ResolveFile(uri.AbsolutePath);
+        if (file is null)
+        {
+            Diagnostics.Log($"404 {uri.AbsolutePath}");
+            return BuildResponse(_environment!, ApiResponse.Error(404, "Not found."));
+        }
+
+        var stream = new MemoryStream(File.ReadAllBytes(file));
+        string headers = string.Join(
+            '\n',
+            $"Content-Type: {StaticContent.ContentTypeFor(file)}",
+            "Cache-Control: no-cache",
+            "X-Content-Type-Options: nosniff");
+
+        return _environment!.CreateWebResourceResponse(stream, 200, "OK", headers);
+    }
+
+    private static CoreWebView2WebResourceResponse BuildResponse(
+        CoreWebView2Environment environment, ApiResponse response)
+    {
+        var stream = new MemoryStream(response.Body);
+
+        // no-store: scan results change constantly, and a cached status response would make
+        // the progress display freeze at whatever the first poll returned.
+        string headers = string.Join(
+            '\n',
+            $"Content-Type: {response.ContentType}",
+            "Cache-Control: no-store",
+            "X-Content-Type-Options: nosniff");
+
+        return environment.CreateWebResourceResponse(
+            stream,
+            response.StatusCode,
+            ReasonPhrase(response.StatusCode),
+            headers);
+    }
+
+    private static string ReasonPhrase(int status) => status switch
+    {
+        200 => "OK",
+        202 => "Accepted",
+        400 => "Bad Request",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        500 => "Internal Server Error",
+        _ => "Unknown",
+    };
 
     private void SetStatus(string message)
     {

@@ -1,0 +1,213 @@
+using System.Net;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+
+namespace Silt.Api;
+
+/// <summary>An intercepted request from the renderer.</summary>
+public readonly record struct ApiRequest(string Method, string Path, string Query, string Body);
+
+/// <summary>The response to write back into the WebView2 resource stream.</summary>
+public sealed record ApiResponse(int StatusCode, string ContentType, byte[] Body)
+{
+    public static ApiResponse Json<T>(T value, int status = 200) =>
+        new(status, "application/json; charset=utf-8",
+            JsonSerializer.SerializeToUtf8Bytes(value, SiltApiRouter.JsonOptions));
+
+    public static ApiResponse Error(int status, string message) =>
+        Json(new ErrorDto(message), status);
+}
+
+/// <summary>
+/// Routes API calls from the renderer to the scan service.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Deliberately not ASP.NET Core. Silt's API is reached through WebView2's
+/// <c>WebResourceRequested</c> interception, never over a socket, so a full HTTP server
+/// would contribute a pipeline, a listener, and tens of megabytes of working set for a
+/// dispatch table this small. On a product whose measured footprint is already over its
+/// own budget, that is not a neutral choice.
+/// </para>
+/// <para>
+/// The CI gate in <c>ci.yml</c> enforces the absence of any TCP listener. A loopback port
+/// would be reachable by every other process on the machine and by any page in any browser.
+/// </para>
+/// </remarks>
+public sealed class SiltApiRouter(ScanService scans)
+{
+    internal static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+        Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
+    };
+
+    public ApiResponse Handle(ApiRequest request)
+    {
+        try
+        {
+            return Dispatch(request);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
+                                      or ArgumentException or InvalidOperationException)
+        {
+            return ApiResponse.Error(500, ex.Message);
+        }
+    }
+
+    private ApiResponse Dispatch(ApiRequest request)
+    {
+        ReadOnlySpan<char> path = request.Path.AsSpan().TrimEnd('/');
+
+        if (path.Equals("/api/volumes", StringComparison.OrdinalIgnoreCase))
+        {
+            return request.Method is "GET"
+                ? ApiResponse.Json(ListVolumes())
+                : MethodNotAllowed();
+        }
+
+        if (path.Equals("/api/scans", StringComparison.OrdinalIgnoreCase))
+        {
+            if (request.Method is not "POST")
+            {
+                return MethodNotAllowed();
+            }
+
+            string? root = ReadRootFromBody(request.Body);
+            if (string.IsNullOrWhiteSpace(root))
+            {
+                return ApiResponse.Error(400, "A 'root' path is required.");
+            }
+
+            if (!Directory.Exists(root))
+            {
+                return ApiResponse.Error(404, $"'{root}' does not exist or is not readable.");
+            }
+
+            return ApiResponse.Json(scans.Start(root), 202);
+        }
+
+        // /api/scans/{id}[/summary|/tree|/cancel]
+        const string prefix = "/api/scans/";
+        if (path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            ReadOnlySpan<char> rest = path[prefix.Length..];
+            int slash = rest.IndexOf('/');
+            string id = (slash < 0 ? rest : rest[..slash]).ToString();
+            string action = slash < 0 ? string.Empty : rest[(slash + 1)..].ToString();
+
+            return action.ToLowerInvariant() switch
+            {
+                "" => scans.GetStatus(id) is { } status
+                    ? ApiResponse.Json(status)
+                    : ApiResponse.Error(404, "No such scan."),
+
+                "summary" => scans.GetSummary(id) is { } summary
+                    ? ApiResponse.Json(summary)
+                    : ApiResponse.Error(404, "Scan not finished, or no such scan."),
+
+                "tree" => scans.GetTree(id, GetQueryValue(request.Query, "path")) is { } tree
+                    ? ApiResponse.Json(tree)
+                    : ApiResponse.Error(404, "No such scan or path."),
+
+                "cancel" => scans.Cancel(id)
+                    ? ApiResponse.Json(new { cancelled = true })
+                    : ApiResponse.Error(404, "No such scan."),
+
+                _ => ApiResponse.Error(404, "Unknown endpoint."),
+            };
+        }
+
+        return ApiResponse.Error(404, "Unknown endpoint.");
+    }
+
+    private static ApiResponse MethodNotAllowed() =>
+        ApiResponse.Error(405, "Method not allowed.");
+
+    private static string? ReadRootFromBody(string body)
+    {
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            return null;
+        }
+
+        try
+        {
+            using JsonDocument doc = JsonDocument.Parse(body);
+            return doc.RootElement.TryGetProperty("root", out JsonElement root)
+                ? root.GetString()
+                : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Reads one value out of a raw query string.
+    /// </summary>
+    /// <remarks>
+    /// Values are percent-decoded, which matters because paths contain spaces and
+    /// backslashes. <c>Uri.UnescapeDataString</c> is used rather than a query parser so
+    /// there is no dependency on ASP.NET Core for a single lookup.
+    /// </remarks>
+    private static string? GetQueryValue(string query, string key)
+    {
+        if (string.IsNullOrEmpty(query))
+        {
+            return null;
+        }
+
+        foreach (Range segment in query.AsSpan().TrimStart('?').Split('&'))
+        {
+            ReadOnlySpan<char> pair = query.AsSpan().TrimStart('?')[segment];
+            int eq = pair.IndexOf('=');
+            if (eq < 0)
+            {
+                continue;
+            }
+
+            if (pair[..eq].Equals(key, StringComparison.OrdinalIgnoreCase))
+            {
+                return Uri.UnescapeDataString(pair[(eq + 1)..].ToString());
+            }
+        }
+
+        return null;
+    }
+
+    private static List<VolumeDto> ListVolumes()
+    {
+        var result = new List<VolumeDto>();
+
+        foreach (DriveInfo drive in DriveInfo.GetDrives())
+        {
+            try
+            {
+                if (drive.DriveType is not (DriveType.Fixed or DriveType.Removable))
+                {
+                    continue;
+                }
+
+                bool ready = drive.IsReady;
+                result.Add(new VolumeDto(
+                    drive.RootDirectory.FullName,
+                    ready && !string.IsNullOrWhiteSpace(drive.VolumeLabel)
+                        ? drive.VolumeLabel
+                        : drive.Name.TrimEnd('\\'),
+                    ready ? drive.DriveFormat : "unknown",
+                    ready ? drive.TotalSize : 0,
+                    ready ? drive.TotalFreeSpace : 0,
+                    ready));
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // A drive that disappears mid-enumeration is not an error worth failing on.
+            }
+        }
+
+        return result;
+    }
+}
