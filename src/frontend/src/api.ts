@@ -115,6 +115,42 @@ export type AppsResponse = {
   totalAttributedBytes: number
 }
 
+export type ChangeKind = 'Added' | 'Removed' | 'Grown' | 'Shrunk' | 'Unchanged'
+
+export type DirectoryChange = {
+  path: string
+  beforeBytes: number
+  afterBytes: number
+  deltaBytes: number
+  selfDeltaBytes: number
+  kind: ChangeKind
+}
+
+export type AppChange = {
+  key: string
+  displayName: string
+  beforeBytes: number
+  afterBytes: number
+  deltaBytes: number
+  kind: ChangeKind
+}
+
+export type Growth = {
+  available: boolean
+  unavailable?: string
+  fromTakenAt?: string
+  toTakenAt?: string
+  spanDays: number
+  fromTotalBytes: number
+  toTotalBytes: number
+  deltaBytes: number
+  freeDeltaBytes: number
+  floorsDiffer: boolean
+  snapshotCount: number
+  directories: DirectoryChange[]
+  apps: AppChange[]
+}
+
 class ApiError extends Error {
   // Declared and assigned explicitly rather than as a constructor parameter property:
   // the tsconfig enables `erasableSyntaxOnly`, which forbids TypeScript-only syntax that
@@ -168,6 +204,9 @@ export const api = {
     request<AppsResponse>(
       `/api/scans/${scanId}/apps${minimumBytes === undefined ? '' : `?min=${minimumBytes}`}`,
     ),
+
+  getGrowth: (scanId: string, days = 7) =>
+    request<Growth>(`/api/scans/${scanId}/growth?days=${days}`),
 
   cancel: (scanId: string) =>
     request<{ cancelled: boolean }>(`/api/scans/${scanId}/cancel`, { method: 'POST' }),

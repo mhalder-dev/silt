@@ -3,6 +3,7 @@ using System.Diagnostics;
 using Silt.Core.Attribution;
 using Silt.Core.Reconciliation;
 using Silt.Core.Scanning;
+using Silt.Core.Snapshots;
 
 namespace Silt.Api;
 
@@ -10,13 +11,24 @@ namespace Silt.Api;
 public sealed class ScanService : IDisposable
 {
     private readonly ConcurrentDictionary<string, ScanSession> _sessions = new(StringComparer.Ordinal);
+    /// <summary>
+    /// Snapshots kept per volume. At roughly one scan a day this is several months of
+    /// history for a few tens of megabytes.
+    /// </summary>
+    private const int SnapshotRetentionCount = 200;
+
     private readonly IVolumeScanner _scanner;
     private readonly IAppAttributor _attributor;
+    private readonly ISnapshotStore _snapshots;
 
-    public ScanService(IVolumeScanner? scanner = null, IAppAttributor? attributor = null)
+    public ScanService(
+        IVolumeScanner? scanner = null,
+        IAppAttributor? attributor = null,
+        ISnapshotStore? snapshots = null)
     {
         _scanner = scanner ?? new BfsScanner();
         _attributor = attributor ?? new AppAttributor();
+        _snapshots = snapshots ?? new SnapshotStore();
     }
 
     public ScanHandleDto Start(string rootPath)
@@ -70,6 +82,7 @@ public sealed class ScanService : IDisposable
                 }
             }
 
+            CaptureSnapshot(session, result);
             session.State = ScanState.Completed;
         }
         catch (OperationCanceledException)
@@ -85,6 +98,50 @@ public sealed class ScanService : IDisposable
         {
             sw.Stop();
             session.Elapsed = sw.Elapsed;
+        }
+    }
+
+    /// <summary>
+    /// Records a snapshot so growth over time can be reported later.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Captured automatically, because history that requires the user to remember to record
+    /// it does not exist when they need it. The 44 GB temp directory that motivated this
+    /// project grew silently over months; the only way to have caught it is to have been
+    /// recording all along.
+    /// </para>
+    /// <para>
+    /// Whole volumes only. Snapshots of arbitrary subfolders would not be comparable with
+    /// each other, and a diff between two different roots is meaningless.
+    /// </para>
+    /// </remarks>
+    private void CaptureSnapshot(ScanSession session, ScanResult result)
+    {
+        if (!IsVolumeRoot(session.Root) || session.Reconciliation is null)
+        {
+            return;
+        }
+
+        try
+        {
+            IReadOnlyList<AppFootprint> apps = _attributor.Attribute(result);
+
+            Snapshot snapshot = _snapshots.Capture(
+                result,
+                session.Reconciliation.VolumeRoot,
+                session.Reconciliation.CapacityBytes,
+                session.Reconciliation.FreeBytes,
+                apps);
+
+            _snapshots.Save(snapshot);
+            _snapshots.Prune(session.Reconciliation.VolumeRoot, SnapshotRetentionCount);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // History is a convenience. Failing to record it must never cost the user the
+            // scan they actually asked for.
+            session.SnapshotError = ex.Message;
         }
     }
 
@@ -296,6 +353,75 @@ public sealed class ScanService : IDisposable
             apps.Sum(a => a.TotalAllocatedBytes));
     }
 
+    /// <summary>
+    /// Compares this scan's snapshot with the recorded snapshot closest to
+    /// <paramref name="days"/> ago.
+    /// </summary>
+    public GrowthDto? GetGrowth(string scanId, double days)
+    {
+        if (!_sessions.TryGetValue(scanId, out ScanSession? s) || s.Result is null)
+        {
+            return null;
+        }
+
+        if (s.Reconciliation is null)
+        {
+            return Unavailable(
+                "History is recorded for whole volumes only, so a scan of a single folder " +
+                "cannot be compared over time.", 0);
+        }
+
+        string volume = s.Reconciliation.VolumeRoot;
+        IReadOnlyList<SnapshotInfo> history = _snapshots.List(volume);
+
+        if (history.Count < 2)
+        {
+            return Unavailable(
+                "This is the first recorded scan of this volume. Scan again in a few days " +
+                "and Silt will show what changed.", history.Count);
+        }
+
+        SnapshotInfo? baselineInfo = GrowthAnalyzer.FindComparisonBaseline(
+            history, TimeSpan.FromDays(days), DateTimeOffset.UtcNow);
+
+        if (baselineInfo is null)
+        {
+            return Unavailable("No earlier snapshot is available to compare against.", history.Count);
+        }
+
+        Snapshot? baseline = _snapshots.Load(volume, baselineInfo.Id);
+        Snapshot? latest = _snapshots.Load(volume, history[0].Id);
+
+        if (baseline is null || latest is null)
+        {
+            return Unavailable("A snapshot could not be read.", history.Count);
+        }
+
+        GrowthReport report = GrowthAnalyzer.Compare(baseline, latest);
+
+        return new GrowthDto(
+            Available: true,
+            Unavailable: null,
+            FromTakenAt: report.FromTakenAt,
+            ToTakenAt: report.ToTakenAt,
+            SpanDays: report.Span.TotalDays,
+            FromTotalBytes: report.FromTotalBytes,
+            ToTotalBytes: report.ToTotalBytes,
+            DeltaBytes: report.DeltaBytes,
+            FreeDeltaBytes: report.FreeDeltaBytes,
+            FloorsDiffer: report.FloorsDiffer,
+            SnapshotCount: history.Count,
+            Directories: [.. report.Directories.Take(40).Select(d => new DirectoryChangeDto(
+                d.Path, d.BeforeBytes, d.AfterBytes, d.DeltaBytes, d.SelfDeltaBytes,
+                d.Kind.ToString()))],
+            Apps: [.. report.Apps.Take(25).Select(a => new AppChangeDto(
+                a.Key, a.DisplayName, a.BeforeBytes, a.AfterBytes, a.DeltaBytes,
+                a.Kind.ToString()))]);
+
+        static GrowthDto Unavailable(string reason, int snapshotCount) => new(
+            false, reason, null, null, 0, 0, 0, 0, 0, false, snapshotCount, [], []);
+    }
+
     public bool Cancel(string scanId)
     {
         if (!_sessions.TryGetValue(scanId, out ScanSession? s))
@@ -326,6 +452,7 @@ public sealed class ScanService : IDisposable
         public volatile ScanState State = ScanState.Running;
         public string? Error { get; set; }
         public string? ReconciliationError { get; set; }
+        public string? SnapshotError { get; set; }
 
         public long DirectoriesScanned;
         public long FilesScanned;

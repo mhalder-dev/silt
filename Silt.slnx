@@ -9,6 +9,7 @@
     <Project Path="src/shell/Silt.Shell/Silt.Shell.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/Silt.Api.Tests/Silt.Api.Tests.csproj" />
     <Project Path="tests/Silt.Core.Tests/Silt.Core.Tests.csproj" />
     <Project Path="tests/Silt.Safety.Tests/Silt.Safety.Tests.csproj" />
   </Folder>

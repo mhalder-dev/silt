@@ -1,5 +1,4 @@
-using System.Net;
-using System.Text;
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -115,6 +114,10 @@ public sealed class SiltApiRouter(ScanService scans)
                     ? ApiResponse.Json(apps)
                     : ApiResponse.Error(404, "Scan not finished, or no such scan."),
 
+                "growth" => scans.GetGrowth(id, ParseDays(request.Query)) is { } growth
+                    ? ApiResponse.Json(growth)
+                    : ApiResponse.Error(404, "Scan not finished, or no such scan."),
+
                 "cancel" => scans.Cancel(id)
                     ? ApiResponse.Json(new { cancelled = true })
                     : ApiResponse.Error(404, "No such scan."),
@@ -128,6 +131,20 @@ public sealed class SiltApiRouter(ScanService scans)
 
     private static ApiResponse MethodNotAllowed() =>
         ApiResponse.Error(405, "Method not allowed.");
+
+    /// <summary>
+    /// How far back to look for a comparison snapshot. Defaults to a week; clamped so a
+    /// nonsense value cannot produce a nonsense comparison window.
+    /// </summary>
+    private static double ParseDays(string query)
+    {
+        const double defaultDays = 7;
+
+        string? raw = GetQueryValue(query, "days");
+        return double.TryParse(raw, CultureInfo.InvariantCulture, out double parsed)
+            ? Math.Clamp(parsed, 0.5, 365)
+            : defaultDays;
+    }
 
     /// <summary>
     /// Size floor for the application list.

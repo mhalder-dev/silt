@@ -106,4 +106,43 @@ public sealed record AppsResponseDto(
     long MinimumBytes,
     long TotalAttributedBytes);
 
+public sealed record DirectoryChangeDto(
+    string Path,
+    long BeforeBytes,
+    long AfterBytes,
+    long DeltaBytes,
+    long SelfDeltaBytes,
+    string Kind);
+
+public sealed record AppChangeDto(
+    string Key,
+    string DisplayName,
+    long BeforeBytes,
+    long AfterBytes,
+    long DeltaBytes,
+    string Kind);
+
+/// <summary>
+/// A growth report, or an explanation of why one cannot be produced yet.
+/// </summary>
+/// <remarks>
+/// <c>Available</c> is false on a first scan, when there is nothing to compare against.
+/// That is the normal starting state, not an error, so it carries a message rather than a
+/// failure status.
+/// </remarks>
+public sealed record GrowthDto(
+    bool Available,
+    string? Unavailable,
+    DateTimeOffset? FromTakenAt,
+    DateTimeOffset? ToTakenAt,
+    double SpanDays,
+    long FromTotalBytes,
+    long ToTotalBytes,
+    long DeltaBytes,
+    long FreeDeltaBytes,
+    bool FloorsDiffer,
+    int SnapshotCount,
+    IReadOnlyList<DirectoryChangeDto> Directories,
+    IReadOnlyList<AppChangeDto> Apps);
+
 public sealed record ErrorDto(string Message);

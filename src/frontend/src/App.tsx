@@ -3,6 +3,7 @@ import {
   api,
   type AppFootprint,
   type AppsResponse,
+  type Growth,
   type Reconciliation,
   type ScanStatus,
   type ScanSummary,
@@ -207,6 +208,7 @@ function Results({ scanId }: { scanId: string }) {
   return (
     <>
       <SummaryStats summary={summary} />
+      <GrowthPanel scanId={scanId} />
       <AppFootprints scanId={scanId} />
       {summary.reconciliation && <Waterfall r={summary.reconciliation} />}
       <TreeBrowser
@@ -215,6 +217,145 @@ function Results({ scanId }: { scanId: string }) {
         currentPath={path ?? summary.root}
         onNavigate={setPath}
       />
+    </>
+  )
+}
+
+const WINDOW_OPTIONS = [
+  { days: 1, label: '24 hours' },
+  { days: 7, label: '7 days' },
+  { days: 30, label: '30 days' },
+]
+
+function signed(bytes: number): string {
+  return `${bytes >= 0 ? '+' : '−'}${formatBytes(Math.abs(bytes))}`
+}
+
+function GrowthPanel({ scanId }: { scanId: string }) {
+  const [days, setDays] = useState(7)
+  const [growth, setGrowth] = useState<Growth | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    setGrowth(null)
+    api
+      .getGrowth(scanId, days)
+      .then(setGrowth)
+      .catch((e: Error) => setError(e.message))
+  }, [scanId, days])
+
+  if (error) return <div className="error">{error}</div>
+
+  return (
+    <section>
+      <div className="growth-header">
+        <h2 className="section-title">What changed</h2>
+        <div className="window-picker" role="group" aria-label="Comparison window">
+          {WINDOW_OPTIONS.map((option) => (
+            <button
+              key={option.days}
+              className={option.days === days ? 'window active' : 'window'}
+              onClick={() => setDays(option.days)}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {!growth && <p className="muted">Comparing with earlier scans…</p>}
+
+      {growth && !growth.available && (
+        <div className="growth-empty">
+          <p>{growth.unavailable}</p>
+          <p className="muted">
+            Silt records a snapshot automatically after every whole-volume scan, so history
+            builds up on its own. {growth.snapshotCount === 1 && '1 snapshot recorded so far.'}
+          </p>
+        </div>
+      )}
+
+      {growth?.available && <GrowthBody growth={growth} />}
+    </section>
+  )
+}
+
+function GrowthBody({ growth }: { growth: Growth }) {
+  const grew = growth.deltaBytes >= 0
+  const maxDelta = Math.max(
+    ...growth.directories.map((d) => Math.abs(d.selfDeltaBytes)),
+    ...growth.apps.map((a) => Math.abs(a.deltaBytes)),
+    1,
+  )
+
+  return (
+    <>
+      <div className={grew ? 'growth-headline up' : 'growth-headline down'}>
+        <span className="growth-delta">{signed(growth.deltaBytes)}</span>
+        <span className="growth-context">
+          over {growth.spanDays.toFixed(1)} days
+          {' · '}
+          free space {signed(growth.freeDeltaBytes)}
+        </span>
+      </div>
+
+      {growth.floorsDiffer && (
+        <p className="note">
+          These snapshots were recorded with different size thresholds, so a folder may appear
+          as new when it only crossed the threshold.
+        </p>
+      )}
+
+      {growth.apps.length > 0 && (
+        <>
+          <h3 className="subsection-title">By application</h3>
+          <ul className="changes">
+            {growth.apps.map((app) => (
+              <li key={app.key} className={`change ${app.deltaBytes >= 0 ? 'up' : 'down'}`}>
+                <span className="change-name">{app.displayName}</span>
+                <span className="change-bar">
+                  <span
+                    className="change-fill"
+                    style={{ width: `${(Math.abs(app.deltaBytes) / maxDelta) * 100}%` }}
+                  />
+                </span>
+                <span className="change-delta">{signed(app.deltaBytes)}</span>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+
+      {growth.directories.length > 0 ? (
+        <>
+          <h3 className="subsection-title">By folder</h3>
+          <p className="muted subsection-note">
+            Each figure is the change that originated in that folder itself, with its
+            subfolders' changes subtracted — so the folder actually responsible is named,
+            not every parent above it.
+          </p>
+          <ul className="changes">
+            {growth.directories.map((dir) => (
+              <li key={dir.path} className={`change ${dir.selfDeltaBytes >= 0 ? 'up' : 'down'}`}>
+                <span className="change-name" title={dir.path}>
+                  {dir.path}
+                  {dir.kind === 'Added' && <span className="tag tag-added">new</span>}
+                  {dir.kind === 'Removed' && <span className="tag tag-removed">gone</span>}
+                </span>
+                <span className="change-bar">
+                  <span
+                    className="change-fill"
+                    style={{ width: `${(Math.abs(dir.selfDeltaBytes) / maxDelta) * 100}%` }}
+                  />
+                </span>
+                <span className="change-delta">{signed(dir.selfDeltaBytes)}</span>
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : (
+        <p className="muted">No folder changed by more than 16 MiB in this window.</p>
+      )}
     </>
   )
 }

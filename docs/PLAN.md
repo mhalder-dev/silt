@@ -426,7 +426,7 @@ optional, and 2–4 h sessions on a multi-project codebase lose 20–30 % to re-
 | ~~**M0**~~ ✅ | Scaffold, solution builds, CI green, WPF+WebView2 window renders React | 20 h | done |
 | ~~**M1**~~ ✅ | BFS scanner + reconciliation waterfall + folder tree UI | 40 h | done |
 | ~~**M2**~~ ✅ | **Per-app attribution** — the differentiator | 30 h | done |
-| **M3** | Snapshots + growth diff + "what grew this week" | 30 h | wk 16 |
+| ~~**M3**~~ ⚠️ | Snapshots + growth diff + "what grew this week" | 30 h | logic done, UI unverified |
 | **M4** | Safety core + dry-run + the 6 rules + Recycle Bin execute | 60 h | wk 24 |
 | **M5** | Treemap (single canvas, spatial-index picking) | 30 h | wk 28 |
 | **M6** | Installer, self-contained publish, GitHub Releases, docs | 25 h | wk 31 |
@@ -442,6 +442,29 @@ If M4 slips or is abandoned, M0–M3 is still a product nobody else ships.
 duplicate finder · RAM subsystem · scheduled background scans.
 
 ---
+
+## 5a. Open items from M3
+
+Two things were observed while testing M3 and are **not** resolved. Both are UI-level; the
+growth engine itself is covered by integration tests.
+
+1. **Scans were cancelled without anyone pressing Cancel.** During automated UI testing a
+   scan started and then received `POST /api/scans/{id}/cancel` twice, ten seconds apart,
+   with no corresponding user action. The initial guess — that an Enter keyup lands on the
+   Cancel button after React swaps in the progress view — does not fit, since a `<button>`
+   activates on Enter *keydown*, not keyup, and would not fire twice. **Cause unknown.**
+   Reproduce by starting a scan and watching `%LOCALAPPDATA%\Silt\silt.log`. Until this is
+   understood, treat cancellation as suspect.
+
+2. **The growth panel has not been visually confirmed.** Its data path is verified end to
+   end by `Silt.Api.Tests`, and it reuses the rendering pattern of three panels already
+   confirmed on screen, but the panel itself has not been seen rendering real data.
+
+Note on verifying UI changes: driving the app with synthetic global keyboard input proved
+unreliable and, on a multi-monitor setup, unsafe — input intended for Silt reached whichever
+window actually held focus. Any future automated UI check must confirm the target window
+owns the input point *immediately before* sending anything, in the same operation. Prefer a
+real UI-automation harness (Playwright against the WebView2 host) over synthetic input.
 
 ## 6. Testing destructive operations safely
 
