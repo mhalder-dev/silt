@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Silt.Core.Attribution;
 using Silt.Core.Scanning;
+using Silt.Safety;
 
 namespace Silt.Core.Snapshots;
 
@@ -142,6 +143,12 @@ public sealed class SnapshotStore : ISnapshotStore
         Directory.CreateDirectory(directory);
 
         string path = Path.Combine(directory, snapshot.Id + ".json.gz");
+
+        // This type is exempt from the SandboxedFileSystem gate because it only ever touches
+        // its own history directory. The exemption is only honest if that is enforced rather
+        // than asserted in a comment, so every write and delete is checked.
+        PathJail.Require(_rootDirectory, path, "write a snapshot");
+
         using FileStream file = File.Create(path);
         using var gzip = new GZipStream(file, CompressionLevel.Optimal);
         JsonSerializer.Serialize(gzip, snapshot, Json);
@@ -202,7 +209,9 @@ public sealed class SnapshotStore : ISnapshotStore
         {
             try
             {
-                File.Delete(Path.Combine(directory, old.Id + ".json.gz"));
+                string path = Path.Combine(directory, old.Id + ".json.gz");
+                PathJail.Require(_rootDirectory, path, "delete a snapshot");
+                File.Delete(path);
                 removed++;
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
