@@ -194,17 +194,36 @@ public sealed class ScannerCorrectnessTests : IDisposable
     [Fact]
     public void BuildPath_DoesNotDoubleSeparatorAtAVolumeRoot()
     {
-        // The scan root keeps its trailing separator ("C:\"), every other node is a bare
-        // segment. Naive concatenation would produce "C:\\Windows".
-        ScanResult result = new BfsScanner().Scan(
-            new ScanOptions { RootPath = Path.GetPathRoot(Environment.SystemDirectory)! });
+        // A volume root keeps its trailing separator ("C:\") while every other node is a
+        // bare segment, so naive concatenation yields "C:\\Windows".
+        //
+        // Nodes are constructed directly rather than produced by a scan: an earlier version
+        // of this test scanned the whole system volume and hung CI for over ten minutes on a
+        // runner image with millions of preinstalled files. Nothing here needs the
+        // filesystem - the behaviour under test is purely path reconstruction.
+        var root = new ScanNode { Name = @"C:\", Parent = null };
+        var windows = new ScanNode { Name = "Windows", Parent = root };
+        var system32 = new ScanNode { Name = "System32", Parent = windows };
 
-        ScanNode? first = result.Root.Children?.FirstOrDefault();
-        Assert.NotNull(first);
+        Assert.Equal(@"C:\", root.BuildPath());
+        Assert.Equal(@"C:\Windows", windows.BuildPath());
+        Assert.Equal(@"C:\Windows\System32", system32.BuildPath());
 
-        string path = first.BuildPath();
-        Assert.DoesNotContain(@"\\", path[2..], StringComparison.Ordinal);
-        Assert.StartsWith(result.Root.Name, path, StringComparison.OrdinalIgnoreCase);
+        // Skip the drive prefix; a doubled separator anywhere after it is the bug.
+        Assert.DoesNotContain(@"\\", system32.BuildPath()[2..], StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BuildPath_HandlesARootWithoutATrailingSeparator()
+    {
+        // Scanning a subdirectory gives a root with no trailing separator, so the separator
+        // must be supplied. This is the mirror image of the volume-root case above; getting
+        // exactly one of them right is the likely failure.
+        var root = new ScanNode { Name = @"D:\projects", Parent = null };
+        var child = new ScanNode { Name = "silt", Parent = root };
+
+        Assert.Equal(@"D:\projects", root.BuildPath());
+        Assert.Equal(@"D:\projects\silt", child.BuildPath());
     }
 
     [Fact]
