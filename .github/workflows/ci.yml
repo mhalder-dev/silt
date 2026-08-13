@@ -89,14 +89,18 @@ jobs:
       - name: Build
         run: dotnet build --no-restore --configuration Release
 
-      # Destructive tests are excluded here and everywhere by default. They require a
-      # scratch VHDX and SILT_DESTRUCTIVE_TESTS=1, and they run in a dedicated workflow.
+      # Two categories are excluded, and both exclusions matter.
       #
-      # xUnit v3 runs on Microsoft.Testing.Platform, whose filter syntax differs from
-      # VSTest's. Verify this filter is actually HONOURED rather than silently ignored —
-      # a silently-ignored filter here would run destructive tests against the runner.
+      # Destructive: requires a scratch VHDX and SILT_DESTRUCTIVE_TESTS=1. A
+      # silently-ignored filter here would run destructive tests against the runner, which
+      # is why the filter mechanism is one we can verify rather than the newest available.
+      #
+      # Benchmark: these scan whole volumes, repeatedly, by design. Leaving them in was
+      # measured at 471 seconds of a 531-second job - six full scans of the runner's disk
+      # on every push, for numbers nobody reads. They are meant to be run deliberately:
+      #   dotnet test --filter "Category=Benchmark" -l "console;verbosity=detailed"
       - name: Test
-        run: dotnet test --no-build --configuration Release --filter "Category!=Destructive"
+        run: dotnet test --no-build --configuration Release --filter "Category!=Destructive&Category!=Benchmark"
 
   frontend:
     name: Frontend
