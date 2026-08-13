@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO;
+using Silt.Safety;
 
 namespace Silt.Shell;
 
@@ -24,13 +25,22 @@ internal static class Diagnostics
         "Silt",
         "silt.log");
 
+    private static readonly string LogDirectory = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Silt");
+
     internal static void Log(string message)
     {
         try
         {
             lock (Gate)
             {
-                Directory.CreateDirectory(Path.GetDirectoryName(LogPath)!);
+                Directory.CreateDirectory(LogDirectory);
+
+                // Guarded like every other exempted writer. This type is on the CI mutation
+                // gate's exemption list, and that exemption is only honest if the constraint
+                // is enforced rather than asserted in a comment.
+                PathJail.Require(LogDirectory, LogPath, "write the diagnostics log");
+
                 File.AppendAllText(
                     LogPath,
                     $"{DateTime.Now:HH:mm:ss.fff}  {message}{Environment.NewLine}");
