@@ -39,12 +39,14 @@ public sealed class BfsScanner : IVolumeScanner
         var root = new ScanNode
         {
             Name = rootPath,
-            FullPath = rootPath,
             Parent = null,
         };
 
-        var queue = new ConcurrentQueue<ScanNode>();
-        queue.Enqueue(root);
+        // The queue carries the path alongside the node so it never has to be stored on the
+        // node itself. These strings live only while an item is queued and are collected
+        // immediately afterwards, instead of being retained for the life of the result.
+        var queue = new ConcurrentQueue<WorkItem>();
+        queue.Enqueue(new WorkItem(root, rootPath));
 
         var dedup = options.DeduplicateHardLinks ? new ConcurrentFileIdSet(1 << 20) : null;
 
@@ -87,7 +89,7 @@ public sealed class BfsScanner : IVolumeScanner
     }
 
     private static unsafe void WorkerLoop(
-        ConcurrentQueue<ScanNode> queue,
+        ConcurrentQueue<WorkItem> queue,
         ConcurrentFileIdSet? dedup,
         Counters counters,
         ScanOptions options,
@@ -109,11 +111,14 @@ public sealed class BfsScanner : IVolumeScanner
                     return;
                 }
 
-                if (!queue.TryDequeue(out ScanNode? node))
+                if (!queue.TryDequeue(out WorkItem work))
                 {
                     spin.SpinOnce();
                     continue;
                 }
+
+                ScanNode node = work.Node;
+                string nodePath = work.FullPath;
 
                 spin = new SpinWait();
                 cancellationToken.ThrowIfCancellationRequested();
@@ -126,7 +131,7 @@ public sealed class BfsScanner : IVolumeScanner
                 };
 
                 EnumerateStatus status = DirectoryEnumerator.Enumerate(
-                    ToExtendedPath(node.FullPath), buffer, ref sink, out int win32Error);
+                    ToExtendedPath(nodePath), buffer, ref sink, out int win32Error);
 
                 node.OwnAllocatedBytes = sink.AllocatedBytes;
                 node.OwnLogicalBytes = sink.LogicalBytes;
@@ -156,19 +161,21 @@ public sealed class BfsScanner : IVolumeScanner
 
                 if (subdirs.Count > 0)
                 {
-                    var children = new List<ScanNode>(subdirs.Count);
+                    // Exact-sized array: the child count is final at this point and the
+                    // list wrapper would be dead weight on every node.
+                    var children = new ScanNode[subdirs.Count];
                     node.Children = children;
 
-                    foreach (PendingChild child in subdirs)
+                    for (int i = 0; i < subdirs.Count; i++)
                     {
+                        PendingChild child = subdirs[i];
                         var childNode = new ScanNode
                         {
                             Name = child.Name,
-                            FullPath = Path.Combine(node.FullPath, child.Name),
                             Parent = node,
                             Condition = child.Condition,
                         };
-                        children.Add(childNode);
+                        children[i] = childNode;
 
                         if ((child.Condition & NodeCondition.NameSurrogate) != 0)
                         {
@@ -179,7 +186,7 @@ public sealed class BfsScanner : IVolumeScanner
                         }
 
                         Interlocked.Increment(ref counters.PendingRef);
-                        queue.Enqueue(childNode);
+                        queue.Enqueue(new WorkItem(childNode, Path.Combine(nodePath, child.Name)));
                     }
                 }
 
@@ -195,7 +202,7 @@ public sealed class BfsScanner : IVolumeScanner
                         dirs,
                         Interlocked.Read(ref counters.FilesRef),
                         Interlocked.Read(ref counters.BytesRef),
-                        node.FullPath));
+                        nodePath));
                 }
 
                 Interlocked.Decrement(ref counters.PendingRef);
@@ -221,7 +228,7 @@ public sealed class BfsScanner : IVolumeScanner
         {
             (ScanNode node, bool childrenDone) = stack.Pop();
 
-            if (!childrenDone && node.Children is { Count: > 0 })
+            if (!childrenDone && node.Children is { Length: > 0 })
             {
                 stack.Push((node, true));
                 foreach (ScanNode child in node.Children)
@@ -274,6 +281,16 @@ public sealed class BfsScanner : IVolumeScanner
     }
 
     private readonly record struct PendingChild(string Name, NodeCondition Condition);
+
+    /// <summary>
+    /// A queued directory and the path needed to open it.
+    /// </summary>
+    /// <remarks>
+    /// The path travels with the work item rather than living on <see cref="ScanNode"/>.
+    /// It is needed only while the directory is being enumerated, so keeping it here makes
+    /// it short-lived garbage instead of a permanent per-node cost.
+    /// </remarks>
+    private readonly record struct WorkItem(ScanNode Node, string FullPath);
 
     /// <summary>Per-directory accumulator. A struct so the enumerator can devirtualize it.</summary>
     private struct DirSink : IEntrySink

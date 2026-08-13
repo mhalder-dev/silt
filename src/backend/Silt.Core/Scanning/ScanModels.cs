@@ -1,3 +1,5 @@
+using System.Text;
+
 namespace Silt.Core.Scanning;
 
 /// <summary>Notable conditions attached to a scanned directory.</summary>
@@ -34,8 +36,12 @@ public enum NodeCondition
 /// </remarks>
 public sealed class ScanNode
 {
+    /// <summary>
+    /// This directory's own name. For the scan root this is the full root path
+    /// (for example <c>C:\</c>); for every other node it is a single path segment.
+    /// </summary>
     public required string Name { get; init; }
-    public required string FullPath { get; init; }
+
     public ScanNode? Parent { get; init; }
 
     /// <summary>Bytes of files directly in this directory, excluding subdirectories.</summary>
@@ -52,11 +58,63 @@ public sealed class ScanNode
     public NodeCondition Condition { get; set; }
     public int Win32Error { get; set; }
 
-    public List<ScanNode>? Children { get; set; }
+    /// <summary>
+    /// Child directories, or null for a leaf.
+    /// </summary>
+    /// <remarks>
+    /// An array rather than a <c>List&lt;T&gt;</c>: the child count is known exactly when
+    /// the directory finishes enumerating and never changes afterwards, so the list wrapper
+    /// would be about 32 bytes of pure overhead on every one of a hundred thousand nodes.
+    /// </remarks>
+    public ScanNode[]? Children { get; set; }
 
     public int Depth => Parent is null ? 0 : Parent.Depth + 1;
 
-    public override string ToString() => $"{FullPath} ({TotalAllocatedBytes:N0} bytes)";
+    /// <summary>
+    /// Reconstructs the full path by walking the parent chain.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The path is deliberately NOT stored on the node. Measured on a 155,311-directory
+    /// scan of C:, keeping a full path string per node cost about 200 bytes each — the
+    /// single largest component of the retained tree, and entirely redundant, since the
+    /// parent chain already encodes every segment.
+    /// </para>
+    /// <para>
+    /// Call it for rows the user can actually see (a page of a few hundred) rather than for
+    /// every node in a traversal.
+    /// </para>
+    /// </remarks>
+    public string BuildPath()
+    {
+        if (Parent is null)
+        {
+            return Name;
+        }
+
+        // Depth is small in practice; node_modules at 30+ levels is the extreme.
+        var segments = new List<string>(12);
+        ScanNode node = this;
+        while (node.Parent is not null)
+        {
+            segments.Add(node.Name);
+            node = node.Parent;
+        }
+
+        var builder = new StringBuilder(node.Name, 160);
+        for (int i = segments.Count - 1; i >= 0; i--)
+        {
+            if (builder.Length > 0 && builder[^1] != Path.DirectorySeparatorChar)
+            {
+                builder.Append(Path.DirectorySeparatorChar);
+            }
+            builder.Append(segments[i]);
+        }
+
+        return builder.ToString();
+    }
+
+    public override string ToString() => $"{Name} ({TotalAllocatedBytes:N0} bytes)";
 }
 
 /// <summary>Inputs to a scan.</summary>

@@ -171,25 +171,27 @@ public sealed class ScanService : IDisposable
             return null;
         }
 
-        List<ScanNode> children = node.Children ?? [];
-        int total = children.Count;
+        ScanNode[] children = node.Children ?? [];
+        int total = children.Length;
 
+        // BuildPath walks the parent chain, so it is called only for the page actually
+        // returned - never for every node in the tree.
         var page = children
             .OrderByDescending(c => c.TotalAllocatedBytes)
             .Take(limit)
             .Select(c => new TreeNodeDto(
                 c.Name,
-                c.FullPath,
+                c.BuildPath(),
                 c.TotalAllocatedBytes,
                 c.TotalLogicalBytes,
                 c.TotalFileCount,
                 c.TotalDirectoryCount,
-                c.Children is { Count: > 0 },
+                c.Children is { Length: > 0 },
                 DescribeConditions(c.Condition)))
             .ToList();
 
         return new TreeResponseDto(
-            node.FullPath,
+            node.BuildPath(),
             node.TotalAllocatedBytes,
             page,
             total,
@@ -223,7 +225,9 @@ public sealed class ScanService : IDisposable
     private static ScanNode? FindNode(ScanNode root, string path)
     {
         string target = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
-        string rootPath = Path.TrimEndingDirectorySeparator(root.FullPath);
+
+        // The root node's Name IS its full path; only descendants hold a bare segment.
+        string rootPath = Path.TrimEndingDirectorySeparator(root.Name);
 
         if (string.Equals(target, rootPath, StringComparison.OrdinalIgnoreCase))
         {

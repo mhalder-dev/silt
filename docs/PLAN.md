@@ -187,17 +187,30 @@ On a 16 GB machine currently showing ~2.66 GB available, that is real.
 > | WebView2 (6 processes) | 359.9 MB | 391.8 MB |
 > | **Total** | **470.5 MB** | **627.5 MB** |
 >
-> The scan tree costs ~125 MB for 155,163 directories — about **840 bytes per directory**,
-> which is far more than the data warrants.
+> #### Retained-heap measurement and fix (resolved)
 >
-> **Cause identified:** `ScanNode` stores `FullPath` as a complete string per node. At an
-> average path length of ~80 characters that is ~160 bytes of UTF-16 per directory,
-> duplicated against a parent chain that already encodes the same information. Fix is to
-> store only `Name` and materialize the path on demand from `Parent`. Do this before M2 —
-> attribution will add per-application aggregates on top of this tree.
+> Working set overstates cost — it includes uncollected garbage and allocator slack. Measured
+> properly instead (forced compacting collection, `GC.KeepAlive` on the rooted tree, managed
+> heap delta), a whole-C: scan tree retained:
 >
-> 627.5 MB is inside the ~700 MB threshold below, but only just, and M2/M3 both add
-> resident state. Treat the next measurement as decisive.
+> | | Retained heap | Per directory |
+> |---|---|---|
+> | Before | 73.8 MiB | 498 B |
+> | **After** | **30.7 MiB** | **208 B** |
+>
+> **−58%.** Two causes, both pure redundancy:
+>
+> 1. `ScanNode.FullPath` stored a complete path string per node — ~200 bytes each,
+>    duplicating what the parent chain already encodes. Removed; the path now travels with
+>    the work item during the scan (short-lived garbage) and is rebuilt on demand by
+>    `BuildPath()` for the few hundred rows actually displayed.
+> 2. `Children` was a `List<ScanNode>`. The child count is final the moment a directory
+>    finishes enumerating, so the list wrapper was ~32 bytes of dead weight per node.
+>    Now an exact-sized array.
+>
+> Guarded by `BuildPath_ReconstructsFullPathAtEveryDepth` and
+> `BuildPath_DoesNotDoubleSeparatorAtAVolumeRoot` — dropping a stored path is only safe
+> while reconstruction is exact.
 
 > **Consequences — these stop being optimizations and become requirements:**
 > - The single-canvas rule (§ below) is mandatory. Three full-viewport canvases at DPR 2 on

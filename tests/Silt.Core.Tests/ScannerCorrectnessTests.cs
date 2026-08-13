@@ -167,6 +167,47 @@ public sealed class ScannerCorrectnessTests : IDisposable
     }
 
     [Fact]
+    public void BuildPath_ReconstructsFullPathAtEveryDepth()
+    {
+        // ScanNode deliberately does not store its path - it is rebuilt from the parent
+        // chain, which halved the retained size of a whole-volume scan. That trade is only
+        // safe while reconstruction is exact, so assert it against paths the OS produced.
+        WriteFile(Path.Combine("alpha", "beta", "gamma", "leaf.bin"), 10);
+
+        ScanResult result = new BfsScanner().Scan(new ScanOptions { RootPath = _root });
+
+        Assert.Equal(_root, result.Root.BuildPath());
+
+        ScanNode alpha = Assert.Single(result.Root.Children!, c => c.Name == "alpha");
+        Assert.Equal(Path.Combine(_root, "alpha"), alpha.BuildPath());
+
+        ScanNode beta = Assert.Single(alpha.Children!, c => c.Name == "beta");
+        Assert.Equal(Path.Combine(_root, "alpha", "beta"), beta.BuildPath());
+
+        ScanNode gamma = Assert.Single(beta.Children!, c => c.Name == "gamma");
+        Assert.Equal(Path.Combine(_root, "alpha", "beta", "gamma"), gamma.BuildPath());
+
+        // The rebuilt path must be usable, not merely plausible.
+        Assert.True(Directory.Exists(gamma.BuildPath()));
+    }
+
+    [Fact]
+    public void BuildPath_DoesNotDoubleSeparatorAtAVolumeRoot()
+    {
+        // The scan root keeps its trailing separator ("C:\"), every other node is a bare
+        // segment. Naive concatenation would produce "C:\\Windows".
+        ScanResult result = new BfsScanner().Scan(
+            new ScanOptions { RootPath = Path.GetPathRoot(Environment.SystemDirectory)! });
+
+        ScanNode? first = result.Root.Children?.FirstOrDefault();
+        Assert.NotNull(first);
+
+        string path = first.BuildPath();
+        Assert.DoesNotContain(@"\\", path[2..], StringComparison.Ordinal);
+        Assert.StartsWith(result.Root.Name, path, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void Scan_DoesNotTraverseJunctions()
     {
         // A junction pointing at a sibling would double-count it, and a junction pointing at
