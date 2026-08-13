@@ -1,0 +1,27 @@
+<Project>
+
+  <!--
+    MSBuild stops walking up once it finds a Directory.Build.props, so the repo-root file
+    must be imported explicitly or every project here silently loses TreatWarningsAsErrors,
+    nullable, and the analysis level.
+  -->
+  <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
+
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+
+    <!--
+      Test-only analyzer relaxations. These are naming and API-shape rules aimed at public
+      library surfaces; test classes are not a public API.
+
+      CA1707 - underscores in member names. Method_Scenario_Expectation is the convention
+               that makes a failing test name readable in CI output. Renaming these to
+               PascalCase would trade real diagnostic value for a rule that does not apply.
+      CA1515 - types could be internal. xUnit requires public test classes.
+
+      Everything else, including the correctness rules, stays enabled.
+    -->
+    <NoWarn>$(NoWarn);CA1707;CA1515</NoWarn>
+  </PropertyGroup>
+
+</Project>
