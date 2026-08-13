@@ -394,9 +394,9 @@ Carried forward from review essentially intact — this part of the draft was st
 | UI | React + TypeScript | 19.x / 5.x | |
 | Build | Vite | 7.x | |
 | Lint | Biome | 2.x | |
-| Test (C#) | xUnit v3 + Shouldly | | **`Verify.XunitV3`**, not `Verify.Xunit` (v2-only — will not attach) |
+| Test (C#) | xUnit **2.9.3**, plain `Assert` | | ⚠️ Drift: this row said "xUnit v3 + Shouldly". Neither is installed — the projects reference `xunit` 2.9.3 with no assertion library. Corrected to what the repo actually builds, rather than adding packages to match a document. The `Verify.XunitV3` note stands **if** v3 is ever adopted. |
 | Property test | CsCheck | | Path-jail fuzzing |
-| Test (TS) | Vitest | | |
+| Test (TS) | *(none yet)* | | ⚠️ Drift: Vitest is not installed and no frontend test script exists. The treemap's geometry invariants were verified by driving the real module in a browser instead (§5c); that is evidence, but it is not a regression gate. **Adding Vitest is the highest-value frontend follow-up.** |
 | Installer | Inno Setup | | **Self-contained publish** — see below |
 
 > **Publish self-contained.** Verified on this machine: `Microsoft.WindowsDesktop.App` is
@@ -428,7 +428,7 @@ optional, and 2–4 h sessions on a multi-project codebase lose 20–30 % to re-
 | ~~**M2**~~ ✅ | **Per-app attribution** — the differentiator | 30 h | done |
 | ~~**M3**~~ ✅ | Snapshots + growth diff + "what grew this week" | 30 h | done |
 | ~~**M4**~~ ✅ | Safety core + dry-run + the 6 rules + Recycle Bin execute | 60 h | done |
-| **M5** | Treemap (single canvas, spatial-index picking) | 30 h | wk 28 |
+| ~~**M5**~~ ✅ | Treemap (single canvas, spatial-index picking) | 30 h | done |
 | **M6** | Installer, self-contained publish, GitHub Releases, docs | 25 h | wk 31 |
 
 **v1.0 ≈ 235 h ≈ 31 weeks at 8 h/week.**
@@ -562,6 +562,88 @@ separator produced the prefix `C:\\`, which nothing matches. A denylist entry pr
 entire volume therefore protected nothing. It failed *open*, on the widest possible root,
 in the primitive the whole cleanup engine depends on — and it was found only because the
 canary asserts in both directions. Fixed, with a regression test.
+
+## 5c. M5 — the treemap, and what it measured
+
+Split deliberately at the wire: `TreemapProjector` (`Silt.Core`) decides *what is worth
+drawing*, `layout.ts` (pure TypeScript, no DOM) decides *where it goes*, and `Treemap.tsx`
+only paints. Each of the three is checkable without the other two, which is what made the
+measurements below possible at all.
+
+### Area conservation is the invariant everything rests on
+
+The projector never drops a node. Anything culled — too small, over the node budget, past
+the depth limit — is rolled into a synthetic `(smaller items)` sibling, and every directory's
+own loose files get a `(files here)` node. So **an expanded node's children sum to exactly
+its own byte count**, and the renderer can scale children against their parent's box with no
+possibility of overflow. Without the loose-files node, a folder holding 300 bytes itself and
+one 100-byte subfolder would draw that subfolder at four times its true size.
+
+Enforced by `AssertAreaIsConserved` across seven cases including a random deep uneven tree.
+
+### The payload cap had a real bug in the obvious implementation
+
+Sizing the 8 MB budget with `Encoding.UTF8.GetByteCount` is wrong. `System.Text.Json`'s
+default encoder escapes every non-ASCII character as `\uXXXX` — **six bytes, against the
+three UTF-8 needs for the same CJK character** — so the estimate undershoots by ~2x and the
+cap silently breaks. It would break only on machines whose directory names are not English,
+i.e. nowhere it would be noticed. `EncodedNameCost` counts the escaped form; both the ASCII
+and the non-ASCII fixture are serialized through the real encoder and asserted under 8 MiB.
+
+### Measured on the dev fixture (810 x 460 CSS px, 160.9 GiB view)
+
+| | |
+|---|---|
+| Nodes projected | 1,994 |
+| Rectangles drawn | **1,396** |
+| Culled below 9 px² | 529 |
+| Folders rolled into `(smaller items)` | 149 |
+| Child rectangles escaping their parent | **0** |
+| Overlapping siblings | **0** |
+| Rectangles below the 9 px² floor | **0** |
+| Hit tests disagreeing with brute force (4,000 random points) | **0** |
+| Aspect ratio, median / p95 | **1.45 / 2.60** |
+| Canvas pixels painted (sampled) | 100 % — no gaps |
+
+1,396 rectangles is the plan's "a few thousand, never 100k", reached without a special case.
+The aspect figures are the evidence that this is genuinely squarified rather than merely
+subdivided; slice-and-dice on the same data produces slivers in the hundreds.
+
+Picking is a uniform grid over the layout — **not** a second id-encoded canvas. That
+technique is not merely expensive, it is wrong: the 2D context premultiplies alpha and
+antialiases any non-integer edge, so a `getImageData` readback near a boundary returns a
+blend of two neighbouring ids which is itself a valid id. Wrong answer, no error, only near
+edges. The grid agrees with brute force on every point tested.
+
+### Two defects found by driving the UI, not by building it
+
+Both passed build, typecheck and lint, and both were fatal in use:
+
+1. **Almost the whole map was inert.** Targeting the rectangle under the cursor sounds
+   obviously right and is not: a subdivided folder is entirely covered by its own children,
+   so the only part of it reachable by a pointer is its ~15 px label band. Measured, 0 % of
+   sampled points were clickable. Clicks now resolve upward to the nearest folder that has
+   something to show — **83 %** of sampled points, the remainder being the root's own
+   `(files here)` box, which correctly has nowhere to go.
+2. **Zooming in crashed the results page.** Hover holds an index into `data.nodes`; clearing
+   it in an effect leaves exactly one render where an index captured against the old view is
+   read against the new one. Zooming returns a much smaller projection, so that index is
+   routinely past the end — `TypeError: Cannot read properties of undefined (reading 'k')`,
+   on the very first click. Now cleared during render, React's documented pattern for state
+   derived from props. Verified over ten zoom-in/zoom-out cycles: **0 uncaught errors.**
+
+Neither was reachable from a test that only asserts the layout is correct. The lesson is the
+one already in §5a: build output is not behaviour.
+
+### Left unverified, stated plainly
+
+- **`devicePixelRatio` is exercised only at DPR 1.** The review browser reported 1, so the
+  2x and 1.5x paths are correct by construction (`round(css * dpr)`) but not observed.
+- **No M5 memory re-measurement.** §2.4 requires one at M5, and it has not been taken: the
+  canvas was reviewed in an ordinary browser, not in the WebView2 shell where the 400 MB
+  budget is measured. The single-canvas rule that the budget depends on *is* implemented and
+  the production bundle creates no Web Worker (verified — `worker-src` is still absent from
+  the CSP, so a blob worker would be blocked). **The measurement itself is still owed.**
 
 ## 6. Testing destructive operations safely
 

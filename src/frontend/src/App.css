@@ -965,3 +965,54 @@ button.danger:disabled {
     gap: 24px;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   Treemap
+
+   The canvas is a block element inside a positioned frame so the tooltip can be
+   absolutely placed against the same coordinate space the hit test uses. Any
+   padding or border on the frame would offset the two against each other and
+   the tooltip would drift from the box it describes.
+   --------------------------------------------------------------------------- */
+
+.treemap {
+  position: relative;
+  width: 100%;
+  min-height: 460px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.treemap-canvas {
+  display: block;
+  cursor: default;
+}
+
+.treemap-canvas.can-open {
+  cursor: pointer;
+}
+
+/* pointer-events: none matters - without it the tooltip sits under the cursor,
+   swallows the next mousemove, and the map flickers as hover is lost and
+   regained. */
+.treemap-tip {
+  position: absolute;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 240px;
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.treemap-tip strong {
+  overflow-wrap: anywhere;
+}

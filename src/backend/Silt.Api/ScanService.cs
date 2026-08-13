@@ -225,10 +225,7 @@ public sealed class ScanService : IDisposable
             return null;
         }
 
-        ScanNode? node = string.IsNullOrWhiteSpace(path)
-            ? s.Result.Root
-            : FindNode(s.Result.Root, path);
-
+        ScanNode? node = Resolve(s.Result.Root, path);
         if (node is null)
         {
             return null;
@@ -278,49 +275,66 @@ public sealed class ScanService : IDisposable
     }
 
     /// <summary>
-    /// Walks the tree to the requested path.
+    /// Projects the subtree at <paramref name="path"/> into flattened treemap rectangles.
     /// </summary>
     /// <remarks>
-    /// Compares segment by segment against names the scanner itself produced, rather than
-    /// doing a string prefix match on the full path. A prefix match would let
-    /// <c>C:\Users\Bob2</c> resolve under <c>C:\Users\Bob</c>.
+    /// The projection is bounded by <see cref="TreemapOptions"/> rather than by a row limit:
+    /// a treemap's unit of interest is area, not rows, so what has to be capped is how much
+    /// area is worth resolving separately, and how large the response is allowed to get.
     /// </remarks>
-    private static ScanNode? FindNode(ScanNode root, string path)
+    public TreemapResponseDto? GetTreemap(string scanId, string? path)
     {
-        string target = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
-
-        // The root node's Name IS its full path; only descendants hold a bare segment.
-        string rootPath = Path.TrimEndingDirectorySeparator(root.Name);
-
-        if (string.Equals(target, rootPath, StringComparison.OrdinalIgnoreCase))
-        {
-            return root;
-        }
-
-        if (!target.StartsWith(rootPath, StringComparison.OrdinalIgnoreCase))
+        if (!_sessions.TryGetValue(scanId, out ScanSession? s) || s.Result is null)
         {
             return null;
         }
 
-        string remainder = target[rootPath.Length..].TrimStart(
-            Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-
-        ScanNode current = root;
-        foreach (string segment in remainder.Split(
-                     [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
-                     StringSplitOptions.RemoveEmptyEntries))
+        ScanNode? node = Resolve(s.Result.Root, path);
+        if (node is null)
         {
-            ScanNode? next = current.Children?.FirstOrDefault(
-                c => string.Equals(c.Name, segment, StringComparison.OrdinalIgnoreCase));
-            if (next is null)
-            {
-                return null;
-            }
-            current = next;
+            return null;
         }
 
-        return current;
+        // BuildPath is called once here, for the view root. Descendants carry bare segments
+        // and the renderer rebuilds paths by walking parents, which is what keeps a
+        // 20,000-node response from being mostly repeated path prefixes.
+        string viewPath = node.BuildPath();
+        TreemapProjection projection = TreemapProjector.Project(node);
+
+        var nodes = new List<TreemapNodeDto>(projection.Nodes.Count);
+        for (int i = 0; i < projection.Nodes.Count; i++)
+        {
+            TreemapNode n = projection.Nodes[i];
+            List<string> conditions = DescribeConditions(n.Condition);
+            nodes.Add(new TreemapNodeDto(
+                n.ParentIndex,
+                // The view root's Name is its full path inside the scan tree, but the response
+                // already carries that as Path; repeating it in the node would make the root
+                // rectangle's label the whole path.
+                i == 0 ? DisplayNameOf(viewPath) : n.Name,
+                n.Bytes,
+                n.Kind.ToString(),
+                n.Expandable,
+                conditions.Count > 0 ? conditions : null));
+        }
+
+        return new TreemapResponseDto(
+            viewPath,
+            projection.TotalBytes,
+            projection.MinimumBytes,
+            projection.AggregatedNodeCount,
+            projection.Truncated,
+            nodes);
     }
+
+    private static string DisplayNameOf(string fullPath)
+    {
+        string name = Path.GetFileName(Path.TrimEndingDirectorySeparator(fullPath));
+        return string.IsNullOrEmpty(name) ? fullPath : name;
+    }
+
+    private static ScanNode? Resolve(ScanNode root, string? path) =>
+        string.IsNullOrWhiteSpace(path) ? root : ScanTree.Find(root, path);
 
     /// <summary>
     /// Per-application footprints for a completed scan.

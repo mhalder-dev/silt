@@ -53,6 +53,29 @@ public sealed record TreeResponseDto(
     int TotalChildCount,
     bool Truncated);
 
+/// <summary>One rectangle in the treemap projection.</summary>
+/// <remarks>
+/// Field names are short because this is the one response whose size is capped: a whole-view
+/// projection is thousands of these, and <c>parentIndex</c> repeated 20,000 times is a
+/// quarter of a megabyte of nothing.
+/// </remarks>
+public sealed record TreemapNodeDto(
+    [property: JsonPropertyName("p")] int ParentIndex,
+    [property: JsonPropertyName("n")] string Name,
+    [property: JsonPropertyName("b")] long Bytes,
+    [property: JsonPropertyName("k")] string Kind,
+    [property: JsonPropertyName("x")] bool Expandable,
+    [property: JsonPropertyName("c")] IReadOnlyList<string>? Conditions);
+
+/// <summary>A bounded, flattened subtree ready to be laid out as a treemap.</summary>
+public sealed record TreemapResponseDto(
+    string Path,
+    long TotalAllocatedBytes,
+    long MinimumBytes,
+    int AggregatedNodeCount,
+    bool Truncated,
+    IReadOnlyList<TreemapNodeDto> Nodes);
+
 public sealed record ReconciliationLineDto(
     string Label,
     long Bytes,

@@ -197,6 +197,174 @@ const growth = {
   ],
 }
 
+/**
+ * Treemap fixture.
+ *
+ * A real nested tree is generated and then flattened by the same rules the backend's
+ * projector uses, rather than hand-writing a flat node list. That matters for two reasons:
+ * the layout is only exercised properly by sizes spanning orders of magnitude at varying
+ * depth, and navigation is only real if clicking a folder returns that folder's own
+ * children. A mock must mirror the contract, not a guess at it - a mock that got
+ * `ScanStatusDto.State` casing wrong once stranded the whole UI on the progress screen.
+ */
+
+type MockNode = { name: string; own: number; children: MockNode[]; total: number }
+
+/** Deterministic, so a layout defect looks the same on every reload. */
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0
+    let t = Math.imul(a ^ (a >>> 15), 1 | a)
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+
+const FOLDER_WORDS = [
+  'cache', 'bin', 'obj', 'node_modules', 'dist', 'src', 'assets', 'logs', 'temp',
+  'packages', 'runtime', 'lib', 'data', 'profiles', 'Code Cache', 'GPUCache',
+  'shaders', 'index', 'blobs', 'staging', 'snapshots', 'extensions', 'plugins',
+]
+
+function buildMockTree(name: string, bytes: number, depth: number, rand: () => number): MockNode {
+  // Fan-out shrinks with depth, the way real trees do, and stops entirely at depth 5 so
+  // module load stays within a few tens of milliseconds.
+  const fanOut = depth >= 5 ? 0 : Math.max(2, Math.round((6 - depth) * (0.6 + rand())))
+
+  if (fanOut === 0 || bytes < 64 * 1024) {
+    return { name, own: bytes, children: [], total: bytes }
+  }
+
+  // A real directory keeps some bytes for itself; a purely container-shaped tree would
+  // never exercise the loose-files rectangle.
+  const own = Math.floor(bytes * rand() * 0.3)
+  let remaining = bytes - own
+
+  const children: MockNode[] = []
+  for (let i = 0; i < fanOut; i++) {
+    const last = i === fanOut - 1
+    // Skewed split, so sizes span orders of magnitude the way they really do rather than
+    // producing a uniform grid that would make any layout look correct.
+    const share = last ? remaining : Math.floor(remaining * (0.15 + rand() * 0.55))
+    remaining -= share
+    const word = FOLDER_WORDS[Math.floor(rand() * FOLDER_WORDS.length)]
+    children.push(buildMockTree(`${word}-${i}`, Math.max(0, share), depth + 1, rand))
+  }
+
+  const total = own + children.reduce((sum, c) => sum + c.total, 0)
+  return { name, own, children, total }
+}
+
+const treemapRoot: MockNode = (() => {
+  const rand = mulberry32(20260814)
+  const children = tree.children
+    .filter((c) => c.allocatedBytes > 0)
+    .map((c) => buildMockTree(c.name, c.allocatedBytes, 1, rand))
+  const own = summary.totalAllocatedBytes - children.reduce((s, c) => s + c.total, 0)
+  return {
+    name: 'C:\\',
+    own: Math.max(0, own),
+    children,
+    total: Math.max(0, own) + children.reduce((s, c) => s + c.total, 0),
+  }
+})()
+
+function findMockNode(node: MockNode, prefix: string, target: string): MockNode | null {
+  if (prefix.toLowerCase() === target.toLowerCase()) return node
+  for (const child of node.children) {
+    const childPath = `${prefix.replace(/[\\/]+$/, '')}\\${child.name}`
+    if (target.toLowerCase().startsWith(childPath.toLowerCase())) {
+      const found = findMockNode(child, childPath, target)
+      if (found) return found
+    }
+  }
+  return null
+}
+
+const MIN_FRACTION = 1e-5
+const MAX_NODES = 20_000
+const MAX_DEPTH = 8
+
+/** Largest-first flattening, matching the backend's projection semantics. */
+function projectMock(root: MockNode, rootPath: string) {
+  const total = root.total
+  const minimumBytes = Math.floor(total * MIN_FRACTION)
+
+  const nodes: { p: number; n: string; b: number; k: string; x: boolean }[] = [
+    {
+      p: -1,
+      n: rootPath.replace(/[\\/]+$/, '').split('\\').pop() || rootPath,
+      b: total,
+      k: 'Directory',
+      x: false,
+    },
+  ]
+
+  let aggregated = 0
+  let truncated = false
+
+  // A sorted frontier rather than a real priority queue: the mock runs once per navigation
+  // over a few tens of thousands of nodes, where the difference is unmeasurable.
+  const frontier: { node: MockNode; self: number; depth: number }[] = [
+    { node: root, self: 0, depth: 0 },
+  ]
+
+  while (frontier.length > 0) {
+    frontier.sort((a, b) => b.node.total - a.node.total)
+    const { node, self, depth } = frontier.shift() as (typeof frontier)[number]
+
+    let unresolved = 0
+    let unresolvedCount = 0
+
+    if (node.own > 0) {
+      if (node.own >= minimumBytes && nodes.length + 1 < MAX_NODES) {
+        nodes.push({ p: self, n: '(files here)', b: node.own, k: 'Files', x: false })
+      } else {
+        unresolved += node.own
+        unresolvedCount++
+      }
+    }
+
+    for (const child of [...node.children].sort((a, b) => b.total - a.total)) {
+      if (child.total < minimumBytes || nodes.length + 1 >= MAX_NODES) {
+        unresolved += child.total
+        unresolvedCount++
+        truncated ||= child.total >= minimumBytes
+        continue
+      }
+
+      const hasChildren = child.children.length > 0
+      const willExpand = hasChildren && depth + 1 < MAX_DEPTH
+      const index = nodes.length
+      nodes.push({
+        p: self,
+        n: child.name,
+        b: child.total,
+        k: 'Directory',
+        x: hasChildren && !willExpand,
+      })
+      if (willExpand) frontier.push({ node: child, self: index, depth: depth + 1 })
+    }
+
+    // Rolled up rather than dropped, so an expanded node's children still sum to exactly
+    // its own size - the invariant the renderer scales against.
+    if (unresolved > 0) {
+      nodes.push({ p: self, n: '(smaller items)', b: unresolved, k: 'Other', x: false })
+      aggregated += unresolvedCount
+    }
+  }
+
+  return {
+    path: rootPath,
+    totalAllocatedBytes: total,
+    minimumBytes,
+    aggregatedNodeCount: aggregated,
+    truncated,
+    nodes,
+  }
+}
+
 let executeCount = 0
 
 const cleanupPlan = {
@@ -364,6 +532,19 @@ export function mockApi(): Plugin {
 
         if (path === `/api/scans/${SCAN_ID}/summary`) return send(res, summary)
         if (path === `/api/scans/${SCAN_ID}/tree`) return send(res, tree)
+
+        if (path === `/api/scans/${SCAN_ID}/treemap`) {
+          // Zooming re-requests with ?path=. Resolving it against the same fixture tree the
+          // root view came from is what makes navigation real: the folder you clicked is the
+          // folder you get, with its own children, rather than a relabelled copy.
+          const requested = new URLSearchParams(url.split('?')[1] ?? '').get('path')
+          if (!requested) return send(res, projectMock(treemapRoot, 'C:\\'))
+
+          const found = findMockNode(treemapRoot, 'C:\\', requested)
+          return found
+            ? send(res, projectMock(found, requested))
+            : send(res, { message: 'No such scan or path.' }, 404)
+        }
         if (path === `/api/scans/${SCAN_ID}/apps`) return send(res, apps)
         if (path === `/api/scans/${SCAN_ID}/growth`) {
           // A 24-hour window has no baseline in this fixture's history, which is also the

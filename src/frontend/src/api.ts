@@ -48,6 +48,11 @@ export type TreeResponse = {
   truncated: boolean
 }
 
+// The treemap's wire types live with the layout code, since the short field names only make
+// sense next to the reason for them. Re-exported here so callers still have one API module.
+import type { TreemapResponse } from './treemap/layout'
+export type { TreemapNodeDto, TreemapResponse } from './treemap/layout'
+
 export type ReconciliationKind = 'Measured' | 'Known' | 'Unmeasured' | 'Unaccounted'
 
 export type ReconciliationLine = {
@@ -251,6 +256,11 @@ export const api = {
   getTree: (scanId: string, path?: string) =>
     request<TreeResponse>(
       `/api/scans/${scanId}/tree${path ? `?path=${encodeURIComponent(path)}` : ''}`,
+    ),
+
+  getTreemap: (scanId: string, path?: string) =>
+    request<TreemapResponse>(
+      `/api/scans/${scanId}/treemap${path ? `?path=${encodeURIComponent(path)}` : ''}`,
     ),
 
   getApps: (scanId: string, minimumBytes?: number) =>

@@ -16,6 +16,8 @@ import {
   type Volume,
 } from './api'
 import { formatBytes, formatCount, formatDuration, formatPercent } from './format'
+import { Treemap, type TreemapStats } from './treemap/Treemap'
+import type { TreemapResponse } from './treemap/layout'
 import './App.css'
 
 type View =
@@ -226,6 +228,12 @@ function Results({ scanId }: { scanId: string }) {
       <GrowthPanel scanId={scanId} />
       <AppFootprints scanId={scanId} />
       {summary.reconciliation && <Waterfall r={summary.reconciliation} />}
+      <TreemapPanel
+        scanId={scanId}
+        rootPath={summary.root}
+        currentPath={path ?? summary.root}
+        onNavigate={setPath}
+      />
       <TreeBrowser
         tree={tree}
         rootPath={summary.root}
@@ -745,6 +753,96 @@ function Waterfall({ r }: { r: Reconciliation }) {
           administrator would let Silt read the {formatCount(r.inaccessibleDirectoryCount)}{' '}
           folders it was denied and query shadow copies.
         </p>
+      )}
+    </section>
+  )
+}
+
+/**
+ * The treemap section: breadcrumbs, the canvas, and an honest footer about what the
+ * picture is not showing.
+ *
+ * Navigation state is owned by `Results` and shared with the folder list, so drilling into
+ * a rectangle moves the list too. Two panels that disagree about where you are would be
+ * worse than either one alone.
+ */
+function TreemapPanel({
+  scanId,
+  rootPath,
+  currentPath,
+  onNavigate,
+}: {
+  scanId: string
+  rootPath: string
+  currentPath: string
+  onNavigate: (path: string | undefined) => void
+}) {
+  const [data, setData] = useState<TreemapResponse | null>(null)
+  const [stats, setStats] = useState<TreemapStats | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    setError(null)
+    api
+      .getTreemap(scanId, currentPath === rootPath ? undefined : currentPath)
+      .then((response) => {
+        if (!cancelled) setData(response)
+      })
+      .catch((e: Error) => {
+        if (!cancelled) setError(e.message)
+      })
+    // Stale responses must not overwrite a newer view: clicking down two levels quickly
+    // issues two requests, and the first one landing last would silently rewind the user.
+    return () => {
+      cancelled = true
+    }
+  }, [scanId, currentPath, rootPath])
+
+  const crumbs = buildCrumbs(rootPath, currentPath)
+
+  return (
+    <section>
+      <h2 className="section-title">Treemap</h2>
+
+      <nav className="crumbs">
+        {crumbs.map((c, i) => (
+          <span key={c.path}>
+            {i > 0 && <span className="crumb-sep">›</span>}
+            <button
+              className="crumb"
+              onClick={() => onNavigate(i === 0 ? undefined : c.path)}
+              disabled={c.path === currentPath}
+            >
+              {c.label}
+            </button>
+          </span>
+        ))}
+      </nav>
+
+      {error && <div className="error">{error}</div>}
+
+      {data ? (
+        <>
+          <Treemap data={data} onNavigate={onNavigate} onStats={setStats} />
+          <p className="note">
+            Area is proportional to allocated size. {formatBytes(data.totalAllocatedBytes)} in
+            view
+            {stats && ` · ${formatCount(stats.rects)} rectangles drawn`}
+            {stats && stats.culled > 0 && ` · ${formatCount(stats.culled)} too small to draw`}
+            {data.aggregatedNodeCount > 0 &&
+              ` · ${formatCount(data.aggregatedNodeCount)} folders grouped into “smaller items”`}
+            .
+          </p>
+          {data.truncated && (
+            <p className="note">
+              This view hit its size budget, so some folders large enough to draw were grouped
+              instead. Click into a folder to resolve it fully.
+            </p>
+          )}
+        </>
+      ) : (
+        !error && <p className="muted">Laying out treemap…</p>
       )}
     </section>
   )

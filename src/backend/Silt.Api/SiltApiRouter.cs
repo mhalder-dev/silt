@@ -174,6 +174,10 @@ public sealed class SiltApiRouter(ScanService scans, CleanupService? cleanup = n
                     ? ApiResponse.Json(tree)
                     : ApiResponse.Error(404, "No such scan or path."),
 
+                "treemap" => scans.GetTreemap(id, GetQueryValue(request.Query, "path")) is { } map
+                    ? ApiResponse.Json(map)
+                    : ApiResponse.Error(404, "No such scan or path."),
+
                 "apps" => scans.GetApps(id, ParseMinimumBytes(request.Query)) is { } apps
                     ? ApiResponse.Json(apps)
                     : ApiResponse.Error(404, "Scan not finished, or no such scan."),
