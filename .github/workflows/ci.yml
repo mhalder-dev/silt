@@ -40,14 +40,22 @@ jobs:
           # not merely asserted in a comment. Adding a name here without one hollows out the
           # gate.
           #
-          #   SandboxedFileSystem.cs - the funnel itself (M4).
+          #   SandboxedFileSystem.cs - the funnel itself. Deletion lives here and nowhere
+          #                            else; the Win32 interop is in that file so no
+          #                            mutation primitive is callable from anywhere else.
           #   SnapshotStore.cs       - writes only its own history directory, and calls
           #                            PathJail.Require before every write and delete.
+          #   OperationJournal.cs    - appends only to its own audit file, likewise guarded
+          #                            by PathJail.Require.
           #
           # Anything that touches USER files belongs behind SandboxedFileSystem, always.
-          $exempt = @('SandboxedFileSystem.cs', 'SnapshotStore.cs')
+          $exempt = @('SandboxedFileSystem.cs', 'SnapshotStore.cs', 'OperationJournal.cs')
 
-          $pattern = 'File\.Delete|Directory\.Delete|File\.Move|File\.Copy|File\.Create|File\.WriteAllBytes|FileInfo\.Delete|NtSetInformationFile|SHFileOperation'
+          # Append/write APIs are included deliberately. An earlier version listed only
+          # destructive calls, which meant a component could create or append to files
+          # anywhere and pass the gate untouched - the journal would have slipped through on
+          # that technicality rather than earning its exemption.
+          $pattern = 'File\.Delete|Directory\.Delete|File\.Move|File\.Copy|File\.Create|File\.WriteAllBytes|File\.WriteAllText|File\.AppendAllText|File\.AppendAllLines|FileInfo\.Delete|NtSetInformationFile|SHFileOperation'
           $files = Get-ChildItem -Path src -Recurse -Filter *.cs -File |
                    Where-Object { $_.FullName -notmatch '\\(bin|obj)\\' } |
                    Where-Object { $exempt -notcontains $_.Name }

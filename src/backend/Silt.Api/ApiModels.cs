@@ -145,4 +145,61 @@ public sealed record GrowthDto(
     IReadOnlyList<DirectoryChangeDto> Directories,
     IReadOnlyList<AppChangeDto> Apps);
 
+public sealed record PlanItemDto(
+    string Path, long AllocatedBytes, bool IsDirectory, DateTimeOffset LastWriteUtc);
+
+public sealed record PlanExclusionDto(string Path, string Reason);
+
+public sealed record RulePlanDto(
+    string RuleId,
+    string DisplayName,
+    string Description,
+    string Tier,
+    string Regeneration,
+    string? RegenerationCommand,
+    long TotalAllocatedBytes,
+    long TotalFileCount,
+    int ItemCount,
+    int ExclusionCount,
+    IReadOnlyList<PlanItemDto> TopItems,
+    IReadOnlyList<PlanExclusionDto> SampleExclusions);
+
+public sealed record CleanupPlanDto(
+    string PlanId,
+    DateTimeOffset CreatedAt,
+    long TotalAllocatedBytes,
+    long TotalFileCount,
+    int TotalItemCount,
+    IReadOnlyList<RulePlanDto> Rules);
+
+public sealed record FailedItemDto(string Path, string Reason);
+
+public sealed record ExecutionResultDto(
+    string OperationId,
+    string RuleId,
+    bool Executed,
+    string Refusal,
+    string? RefusalMessage,
+    int ItemsDeleted,
+    int ItemsFailed,
+    long BytesDeleted,
+    long RecycleBinAvailableBytes,
+    IReadOnlyList<FailedItemDto> Failures);
+
+public sealed record JournalEntryDto(
+    string OperationId,
+    DateTimeOffset At,
+    string RuleId,
+    string Path,
+    long Bytes,
+    bool Succeeded,
+    bool Recoverable,
+    string? Failure);
+
+public sealed record JournalDto(
+    bool Intact,
+    string? FirstBreakAt,
+    int TotalEntries,
+    IReadOnlyList<JournalEntryDto> Entries);
+
 public sealed record ErrorDto(string Message);

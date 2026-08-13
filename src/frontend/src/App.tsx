@@ -3,7 +3,11 @@ import {
   api,
   type AppFootprint,
   type AppsResponse,
+  type CleanupPlan,
+  type ExecutionResult,
   type Growth,
+  type RulePlan,
+  type SafetyStatus,
   type Reconciliation,
   type ScanStatus,
   type ScanSummary,
@@ -218,6 +222,7 @@ function Results({ scanId }: { scanId: string }) {
   return (
     <>
       <SummaryStats summary={summary} />
+      <CleanupPanel />
       <GrowthPanel scanId={scanId} />
       <AppFootprints scanId={scanId} />
       {summary.reconciliation && <Waterfall r={summary.reconciliation} />}
@@ -228,6 +233,182 @@ function Results({ scanId }: { scanId: string }) {
         onNavigate={setPath}
       />
     </>
+  )
+}
+
+const TIER_LABELS: Record<string, string> = {
+  AlwaysSafe: 'always safe',
+  SafeWithCaveat: 'safe, with a caveat',
+  RequiresReview: 'needs review',
+}
+
+function CleanupPanel() {
+  const [plan, setPlan] = useState<CleanupPlan | null>(null)
+  const [safety, setSafety] = useState<SafetyStatus | null>(null)
+  const [results, setResults] = useState<Record<string, ExecutionResult>>({})
+  const [confirming, setConfirming] = useState<string | null>(null)
+  const [busy, setBusy] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    api.getSafety().then(setSafety).catch(() => setSafety(null))
+    api
+      .createCleanupPlan()
+      .then(setPlan)
+      .catch((e: Error) => setError(e.message))
+  }, [])
+
+  const execute = async (ruleId: string) => {
+    if (!plan) return
+    setBusy(ruleId)
+    setConfirming(null)
+    try {
+      const result = await api.executeRule(plan.planId, ruleId)
+      setResults((previous) => ({ ...previous, [ruleId]: result }))
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  if (error) return <div className="error">{error}</div>
+  if (!plan) return <p className="muted">Working out what can safely be removed…</p>
+
+  // The safety self-check gates the whole panel. If the protections cannot be proven to
+  // work, nothing is offered for deletion.
+  if (safety && !safety.healthy) {
+    return (
+      <section>
+        <h2 className="section-title">Reclaim space</h2>
+        <div className="error">
+          <strong>Cleanup is disabled.</strong> Silt&apos;s safety checks did not pass, so it
+          will not offer to delete anything.
+          <ul>
+            {safety.failures.slice(0, 5).map((f) => (
+              <li key={f.path}>
+                {f.path} — {f.expectation}
+              </li>
+            ))}
+          </ul>
+        </div>
+      </section>
+    )
+  }
+
+  const actionable = plan.rules.filter((r) => r.itemCount > 0)
+
+  return (
+    <section>
+      <h2 className="section-title">Reclaim space</h2>
+
+      {actionable.length === 0 ? (
+        <p className="muted">Nothing to clean up — none of the rules found anything.</p>
+      ) : (
+        <>
+          <p className="muted waterfall-intro">
+            {formatBytes(plan.totalAllocatedBytes)} across {formatCount(plan.totalItemCount)}{' '}
+            items. Everything goes to the Recycle Bin, and every rule says how the data comes
+            back.
+          </p>
+
+          <ul className="rules">
+            {actionable.map((rule) => (
+              <RuleRow
+                key={rule.ruleId}
+                rule={rule}
+                result={results[rule.ruleId]}
+                busy={busy === rule.ruleId}
+                confirming={confirming === rule.ruleId}
+                onAskConfirm={() => setConfirming(rule.ruleId)}
+                onCancel={() => setConfirming(null)}
+                onConfirm={() => void execute(rule.ruleId)}
+              />
+            ))}
+          </ul>
+        </>
+      )}
+    </section>
+  )
+}
+
+function RuleRow({
+  rule,
+  result,
+  busy,
+  confirming,
+  onAskConfirm,
+  onCancel,
+  onConfirm,
+}: {
+  rule: RulePlan
+  result?: ExecutionResult
+  busy: boolean
+  confirming: boolean
+  onAskConfirm: () => void
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  return (
+    <li className="rule">
+      <div className="rule-head">
+        <span className="rule-name">
+          {rule.displayName}
+          <span className={`tag tier-${rule.tier}`}>{TIER_LABELS[rule.tier] ?? rule.tier}</span>
+        </span>
+        <span className="rule-size">{formatBytes(rule.totalAllocatedBytes)}</span>
+      </div>
+
+      <p className="rule-desc">{rule.description}</p>
+
+      <p className="rule-regen">
+        <strong>If you delete this:</strong> {rule.regeneration}
+        {rule.regenerationCommand && (
+          <>
+            {' '}
+            <code>{rule.regenerationCommand}</code>
+          </>
+        )}
+      </p>
+
+      <div className="rule-meta">
+        {formatCount(rule.itemCount)} items · {formatCount(rule.totalFileCount)} files
+        {rule.exclusionCount > 0 && ` · ${formatCount(rule.exclusionCount)} skipped`}
+      </div>
+
+      {result ? (
+        <div className={result.executed ? 'rule-result ok' : 'rule-result refused'}>
+          {result.executed ? (
+            <>
+              Moved {formatCount(result.itemsDeleted)} items to the Recycle Bin (
+              {formatBytes(result.bytesDeleted)}).
+              {result.itemsFailed > 0 && ` ${formatCount(result.itemsFailed)} were skipped.`}
+            </>
+          ) : (
+            <>{result.refusalMessage}</>
+          )}
+        </div>
+      ) : confirming ? (
+        <div className="rule-confirm">
+          <span>
+            Move {formatCount(rule.itemCount)} items ({formatBytes(rule.totalAllocatedBytes)}) to
+            the Recycle Bin?
+          </span>
+          <span className="rule-actions">
+            <button className="danger" onClick={onConfirm} disabled={busy}>
+              {busy ? 'Working…' : 'Move to Recycle Bin'}
+            </button>
+            <button className="link-button" onClick={onCancel}>
+              Cancel
+            </button>
+          </span>
+        </div>
+      ) : (
+        <button className="rule-action" onClick={onAskConfirm}>
+          Clean up {formatBytes(rule.totalAllocatedBytes)}
+        </button>
+      )}
+    </li>
   )
 }
 

@@ -197,6 +197,82 @@ const growth = {
   ],
 }
 
+let executeCount = 0
+
+const cleanupPlan = {
+  planId: 'plan-mock-1',
+  createdAt: '2026-08-14T09:30:00Z',
+  totalAllocatedBytes: Math.round(3.63 * GIB),
+  totalFileCount: 40479,
+  totalItemCount: 239,
+  rules: [
+    {
+      ruleId: 'pkgmgr.caches',
+      displayName: 'Package manager download caches',
+      description:
+        'Downloaded package archives for NuGet, pip and uv. These are HTTP caches, not the installed packages themselves.',
+      tier: 'SafeWithCaveat',
+      regeneration:
+        'Packages are re-downloaded on the next restore. Installed packages are untouched; only the download cache is cleared.',
+      regenerationCommand: 'dotnet nuget locals http-cache --clear',
+      totalAllocatedBytes: Math.round(1.8 * GIB),
+      totalFileCount: 27017,
+      itemCount: 14,
+      exclusionCount: 0,
+      topItems: [],
+      sampleExclusions: [],
+    },
+    {
+      ruleId: 'chrome.cache',
+      displayName: 'Chrome browsing caches',
+      description:
+        'Cached page resources for each Chrome profile. History, bookmarks, passwords and extensions live elsewhere and are not touched.',
+      tier: 'SafeWithCaveat',
+      regeneration:
+        'Pages re-download their resources, so browsing is briefly slower. You stay signed in and nothing is removed from your history or bookmarks.',
+      regenerationCommand: null,
+      totalAllocatedBytes: Math.round(1.19 * GIB),
+      totalFileCount: 10449,
+      itemCount: 31,
+      exclusionCount: 0,
+      topItems: [],
+      sampleExclusions: [],
+    },
+    {
+      ruleId: 'crashdumps.thumbcache',
+      displayName: 'Crash dumps and thumbnail caches',
+      description:
+        'Memory dumps written when an application crashed, and Explorer thumbnail databases.',
+      tier: 'AlwaysSafe',
+      regeneration:
+        'Thumbnails are regenerated as you browse folders. Crash dumps are only useful to whoever was debugging that crash.',
+      regenerationCommand: null,
+      totalAllocatedBytes: Math.round(0.22 * GIB),
+      totalFileCount: 40,
+      itemCount: 40,
+      exclusionCount: 0,
+      topItems: [],
+      sampleExclusions: [],
+    },
+    {
+      ruleId: 'temp.user.aged',
+      displayName: 'Temporary files older than 7 days',
+      description:
+        'Windows and every application write scratch files here and frequently never remove them.',
+      tier: 'AlwaysSafe',
+      regeneration:
+        'Applications recreate what they need on demand. Nothing here is expected to survive a reboot.',
+      regenerationCommand: null,
+      totalAllocatedBytes: Math.round(0.03 * GIB),
+      totalFileCount: 1306,
+      itemCount: 46,
+      exclusionCount: 747,
+      topItems: [],
+      sampleExclusions: [],
+    },
+  ],
+}
+
 function send(res: ServerResponse, body: unknown, status = 200) {
   const json = JSON.stringify(body)
   res.statusCode = status
@@ -220,6 +296,49 @@ export function mockApi(): Plugin {
         const path = url.split('?')[0]
 
         if (path === '/api/volumes') return send(res, volumes)
+
+        if (path === '/api/cleanup/safety') {
+          return send(res, { healthy: true, failures: [] })
+        }
+
+        if (path === '/api/cleanup/plans' && req.method === 'POST') {
+          return send(res, cleanupPlan, 201)
+        }
+
+        if (path.startsWith('/api/cleanup/plans/') && path.endsWith('/execute')) {
+          // Alternates so both the success and the refusal path can be reviewed. The
+          // refusal is the more important of the two to get right visually.
+          executeCount++
+          return send(
+            res,
+            executeCount % 2 === 1
+              ? {
+                  operationId: 'op-mock-1',
+                  ruleId: 'temp.user.aged',
+                  executed: true,
+                  refusal: 'None',
+                  refusalMessage: null,
+                  itemsDeleted: 46,
+                  itemsFailed: 0,
+                  bytesDeleted: Math.round(1.9 * GIB),
+                  recycleBinAvailableBytes: Math.round(20 * GIB),
+                  failures: [],
+                }
+              : {
+                  operationId: 'op-mock-2',
+                  ruleId: 'npm.cache',
+                  executed: false,
+                  refusal: 'ExceedsRecycleBinCapacity',
+                  refusalMessage:
+                    'This batch is 44.00 GiB but only 20.00 GiB will fit in the Recycle Bin. Windows would permanently destroy the overflow rather than fail, so nothing was deleted. Empty the Recycle Bin or clean this in smaller batches.',
+                  itemsDeleted: 0,
+                  itemsFailed: 0,
+                  bytesDeleted: 0,
+                  recycleBinAvailableBytes: Math.round(20 * GIB),
+                  failures: [],
+                },
+          )
+        }
         if (path === '/api/scans' && req.method === 'POST') {
           return send(res, { scanId: SCAN_ID }, 202)
         }

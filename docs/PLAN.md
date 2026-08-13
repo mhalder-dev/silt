@@ -427,7 +427,7 @@ optional, and 2–4 h sessions on a multi-project codebase lose 20–30 % to re-
 | ~~**M1**~~ ✅ | BFS scanner + reconciliation waterfall + folder tree UI | 40 h | done |
 | ~~**M2**~~ ✅ | **Per-app attribution** — the differentiator | 30 h | done |
 | ~~**M3**~~ ✅ | Snapshots + growth diff + "what grew this week" | 30 h | done |
-| **M4** ◐ | Safety core + dry-run + the 6 rules + Recycle Bin execute | 60 h | safety + dry-run done; **execute not built** |
+| ~~**M4**~~ ✅ | Safety core + dry-run + the 6 rules + Recycle Bin execute | 60 h | done |
 | **M5** | Treemap (single canvas, spatial-index picking) | 30 h | wk 28 |
 | **M6** | Installer, self-contained publish, GitHub Releases, docs | 25 h | wk 31 |
 
@@ -511,9 +511,42 @@ Built, in this order, deliberately:
 6. **`CleanupPlanner`** — dry-run. Every candidate is checked against the denylist
    *individually, after expansion*, so a rule cannot widen its own reach.
 
-**There is still no capability to delete anything.** `CleanupPlanner` produces a description,
-not an instruction, and a test asserts the filesystem is byte-identical before and after
-planning. The executor, journal and Recycle Bin integration are the remaining M4 work.
+Then, only once all of the above was in place:
+
+7. **`SandboxedFileSystem`** — the sole mutation point. The Win32 interop lives *in that
+   file* so no deletion primitive is callable from anywhere else. It re-checks the denylist
+   at execution time (a path can become a junction between planning and executing) and
+   re-validates each item against what the plan recorded. **There is no permanent-delete
+   path in the type at all** — not a flag, not an overload; the capability does not exist.
+8. **`OperationJournal`** — append-only, hash-chained. It cannot prevent tampering by a
+   process running as the user, but it makes tampering *detectable*, which is the
+   achievable property.
+9. **`CleanupExecutor`** — whose most important behaviour is **refusal**.
+
+### Two interop bugs, both found by tests that insisted on ground truth
+
+Both were `Pack = 1` on a Win32 struct — correct for x86, wrong for x64.
+
+- **`SHFILEOPSTRUCTW`**: misaligned every pointer after `wFunc`, so the shell dereferenced
+  garbage and the process died with an access violation (0xC0000005) *inside the delete
+  call*. The interlocks confined it to a scratch directory.
+- **`SHQUERYRBINFO`**: measured 20 bytes instead of 24, so `cbSize` was wrong and
+  `SHQueryRecycleBin` rejected every call. This one failed **silently and dangerously**: the
+  bin always appeared empty, so the capacity guard believed the entire quota was free no
+  matter what the bin actually held.
+
+The second was caught only because the destructive test asserted the Recycle Bin's item
+count *grew*, rather than trusting that the files had vanished. Vanishing is not evidence of
+recoverability — the first run reported `deleted=2, failed=0, recoverable=true` while the
+bin count stayed at `0 → 0`. After the fix: `6 → 8`, genuinely recoverable.
+
+### Capacity refusal
+
+The Recycle Bin is a quota, not a guarantee: an oversized delete does not fail, it
+permanently destroys the overflow and reports success. Measured on this machine, the quota
+is **23,826 MB on C:** and 4,607 MB on D:. A batch that will not fit is therefore **refused
+before anything is touched**, and the user is told to split it. A refusal is not journalled,
+because nothing happened.
 
 ### Measured dry-run on the development machine
 

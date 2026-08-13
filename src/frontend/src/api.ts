@@ -151,6 +151,59 @@ export type Growth = {
   apps: AppChange[]
 }
 
+export type SafetyTier = 'AlwaysSafe' | 'SafeWithCaveat' | 'RequiresReview'
+
+export type PlanItem = {
+  path: string
+  allocatedBytes: number
+  isDirectory: boolean
+  lastWriteUtc: string
+}
+
+export type PlanExclusion = { path: string; reason: string }
+
+export type RulePlan = {
+  ruleId: string
+  displayName: string
+  description: string
+  tier: SafetyTier
+  regeneration: string
+  regenerationCommand?: string
+  totalAllocatedBytes: number
+  totalFileCount: number
+  itemCount: number
+  exclusionCount: number
+  topItems: PlanItem[]
+  sampleExclusions: PlanExclusion[]
+}
+
+export type CleanupPlan = {
+  planId: string
+  createdAt: string
+  totalAllocatedBytes: number
+  totalFileCount: number
+  totalItemCount: number
+  rules: RulePlan[]
+}
+
+export type ExecutionResult = {
+  operationId: string
+  ruleId: string
+  executed: boolean
+  refusal: string
+  refusalMessage?: string
+  itemsDeleted: number
+  itemsFailed: number
+  bytesDeleted: number
+  recycleBinAvailableBytes: number
+  failures: { path: string; reason: string }[]
+}
+
+export type SafetyStatus = {
+  healthy: boolean
+  failures: { path: string; expectation: string }[]
+}
+
 class ApiError extends Error {
   // Declared and assigned explicitly rather than as a constructor parameter property:
   // the tsconfig enables `erasableSyntaxOnly`, which forbids TypeScript-only syntax that
@@ -207,6 +260,19 @@ export const api = {
 
   getGrowth: (scanId: string, days = 7) =>
     request<Growth>(`/api/scans/${scanId}/growth?days=${days}`),
+
+  getSafety: () => request<SafetyStatus>('/api/cleanup/safety'),
+
+  createCleanupPlan: () => request<CleanupPlan>('/api/cleanup/plans', { method: 'POST' }),
+
+  // Execution names a rule from an already-issued plan. There is no endpoint that accepts
+  // paths, so nothing can be deleted that a dry run has not already shown the user.
+  executeRule: (planId: string, ruleId: string) =>
+    request<ExecutionResult>(`/api/cleanup/plans/${planId}/execute`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ruleId }),
+    }),
 
   cancel: (scanId: string) =>
     request<{ cancelled: boolean }>(`/api/scans/${scanId}/cancel`, { method: 'POST' }),

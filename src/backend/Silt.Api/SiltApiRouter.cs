@@ -34,8 +34,10 @@ public sealed record ApiResponse(int StatusCode, string ContentType, byte[] Body
 /// would be reachable by every other process on the machine and by any page in any browser.
 /// </para>
 /// </remarks>
-public sealed class SiltApiRouter(ScanService scans)
+public sealed class SiltApiRouter(ScanService scans, CleanupService? cleanup = null)
 {
+    private readonly CleanupService _cleanup = cleanup ?? new CleanupService();
+
     internal static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
@@ -64,6 +66,68 @@ public sealed class SiltApiRouter(ScanService scans)
             return request.Method is "GET"
                 ? ApiResponse.Json(ListVolumes())
                 : MethodNotAllowed();
+        }
+
+        if (path.Equals("/api/cleanup/safety", StringComparison.OrdinalIgnoreCase))
+        {
+            IReadOnlyList<Silt.Core.Safety.CanaryFailure> failures = _cleanup.VerifySafety();
+            return ApiResponse.Json(new
+            {
+                healthy = failures.Count == 0,
+                failures = failures.Select(f => new { f.Path, f.Expectation }),
+            });
+        }
+
+        // Planning is a GET-shaped idea but creates a server-side plan, so it is a POST.
+        if (path.Equals("/api/cleanup/plans", StringComparison.OrdinalIgnoreCase))
+        {
+            return request.Method is "POST"
+                ? ApiResponse.Json(_cleanup.CreatePlan(DateTimeOffset.UtcNow), 201)
+                : MethodNotAllowed();
+        }
+
+        const string planPrefix = "/api/cleanup/plans/";
+        if (path.StartsWith(planPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            ReadOnlySpan<char> rest = path[planPrefix.Length..];
+            int slash = rest.IndexOf('/');
+            string planId = (slash < 0 ? rest : rest[..slash]).ToString();
+            string action = slash < 0 ? string.Empty : rest[(slash + 1)..].ToString();
+
+            if (action.Length == 0)
+            {
+                return _cleanup.GetPlan(planId) is { } plan
+                    ? ApiResponse.Json(plan)
+                    : ApiResponse.Error(404, "No such plan.");
+            }
+
+            // Execution names a rule from an already-issued plan. There is deliberately no
+            // endpoint that accepts paths, so nothing can be deleted that a dry run has not
+            // already enumerated for the user.
+            if (action.Equals("execute", StringComparison.OrdinalIgnoreCase))
+            {
+                if (request.Method is not "POST")
+                {
+                    return MethodNotAllowed();
+                }
+
+                string? ruleId = ReadStringFromBody(request.Body, "ruleId");
+                if (string.IsNullOrWhiteSpace(ruleId))
+                {
+                    return ApiResponse.Error(400, "A 'ruleId' from the plan is required.");
+                }
+
+                return _cleanup.Execute(planId, ruleId, DateTimeOffset.UtcNow) is { } result
+                    ? ApiResponse.Json(result)
+                    : ApiResponse.Error(404, "No such plan or rule.");
+            }
+
+            return ApiResponse.Error(404, "Unknown endpoint.");
+        }
+
+        if (path.Equals("/api/cleanup/journal", StringComparison.OrdinalIgnoreCase))
+        {
+            return ApiResponse.Json(_cleanup.GetJournal(200));
         }
 
         if (path.Equals("/api/scans", StringComparison.OrdinalIgnoreCase))
@@ -161,7 +225,9 @@ public sealed class SiltApiRouter(ScanService scans)
         return long.TryParse(raw, out long parsed) && parsed >= 0 ? parsed : defaultFloor;
     }
 
-    private static string? ReadRootFromBody(string body)
+    private static string? ReadRootFromBody(string body) => ReadStringFromBody(body, "root");
+
+    private static string? ReadStringFromBody(string body, string property)
     {
         if (string.IsNullOrWhiteSpace(body))
         {
@@ -171,8 +237,8 @@ public sealed class SiltApiRouter(ScanService scans)
         try
         {
             using JsonDocument doc = JsonDocument.Parse(body);
-            return doc.RootElement.TryGetProperty("root", out JsonElement root)
-                ? root.GetString()
+            return doc.RootElement.TryGetProperty(property, out JsonElement value)
+                ? value.GetString()
                 : null;
         }
         catch (JsonException)
