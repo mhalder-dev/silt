@@ -120,6 +120,16 @@ function ScanProgress({
   const [status, setStatus] = useState<ScanStatus | null>(null)
   const doneRef = useRef(false)
 
+  // The callbacks are held in refs so the polling effect can depend on scanId alone.
+  //
+  // Previously the effect listed onDone/onError as dependencies, and the parent recreates
+  // both as fresh closures on every render. Any parent re-render therefore tore down the
+  // poll loop and started a new one mid-scan. It happened to work because the loop is
+  // idempotent, but it meant an unbounded number of restarts during a long scan and made
+  // the lifetime of the loop depend on unrelated parent state.
+  const callbacks = useRef({ onDone, onError })
+  callbacks.current = { onDone, onError }
+
   useEffect(() => {
     let cancelled = false
 
@@ -133,16 +143,16 @@ function ScanProgress({
         setStatus(s)
         if (s.state === 'completed') {
           doneRef.current = true
-          onDone()
+          callbacks.current.onDone()
           return
         }
         if (s.state === 'failed' || s.state === 'cancelled') {
           doneRef.current = true
-          onError(s.error ?? `Scan ${s.state}.`)
+          callbacks.current.onError(s.error ?? `Scan ${s.state}.`)
           return
         }
       } catch (e) {
-        if (!cancelled) onError((e as Error).message)
+        if (!cancelled) callbacks.current.onError((e as Error).message)
         return
       }
       setTimeout(tick, 200)
@@ -152,7 +162,7 @@ function ScanProgress({
     return () => {
       cancelled = true
     }
-  }, [scanId, onDone, onError])
+  }, [scanId])
 
   return (
     <section className="scanning">

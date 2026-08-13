@@ -16,7 +16,13 @@
       - style-src allows 'unsafe-inline' only because React sets inline styles; scripts do not
         get the same latitude.
       - connect-src is 'self' only: the app talks to its in-process host, never the network.
-      - Silt does not phone home. frame-ancestors 'none' and no remote origins, ever.
+      - Silt does not phone home; no remote origins, ever.
+
+      frame-ancestors is deliberately NOT listed here: it is ignored when delivered by a
+      meta element, so putting it here would look like protection while doing nothing.
+      The shell sends the real policy, including frame-ancestors, as an HTTP header on
+      every HTML response. This meta tag is the fallback that covers `npm run dev`, where
+      there is no shell to set headers.
     -->
     <meta
       http-equiv="Content-Security-Policy"
@@ -30,7 +36,6 @@
         object-src 'none';
         base-uri 'none';
         form-action 'none';
-        frame-ancestors 'none';
       "
     />
 

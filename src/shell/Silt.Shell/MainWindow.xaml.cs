@@ -246,13 +246,24 @@ public partial class MainWindow : Window, IDisposable
         }
 
         var stream = new MemoryStream(File.ReadAllBytes(file));
-        string headers = string.Join(
-            '\n',
-            $"Content-Type: {StaticContent.ContentTypeFor(file)}",
-            "Cache-Control: no-cache",
-            "X-Content-Type-Options: nosniff");
+        string contentType = StaticContent.ContentTypeFor(file);
 
-        return _environment!.CreateWebResourceResponse(stream, 200, "OK", headers);
+        var headerLines = new List<string>(4)
+        {
+            $"Content-Type: {contentType}",
+            "Cache-Control: no-cache",
+            "X-Content-Type-Options: nosniff",
+        };
+
+        // Only documents need a CSP, and only a header delivery makes frame-ancestors
+        // effective. See StaticContent.ContentSecurityPolicy.
+        if (contentType.StartsWith("text/html", StringComparison.Ordinal))
+        {
+            headerLines.Add($"Content-Security-Policy: {StaticContent.ContentSecurityPolicy}");
+        }
+
+        return _environment!.CreateWebResourceResponse(
+            stream, 200, "OK", string.Join('\n', headerLines));
     }
 
     private static CoreWebView2WebResourceResponse BuildResponse(

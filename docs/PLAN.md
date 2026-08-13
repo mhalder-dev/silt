@@ -426,7 +426,7 @@ optional, and 2–4 h sessions on a multi-project codebase lose 20–30 % to re-
 | ~~**M0**~~ ✅ | Scaffold, solution builds, CI green, WPF+WebView2 window renders React | 20 h | done |
 | ~~**M1**~~ ✅ | BFS scanner + reconciliation waterfall + folder tree UI | 40 h | done |
 | ~~**M2**~~ ✅ | **Per-app attribution** — the differentiator | 30 h | done |
-| ~~**M3**~~ ⚠️ | Snapshots + growth diff + "what grew this week" | 30 h | logic done, UI unverified |
+| ~~**M3**~~ ✅ | Snapshots + growth diff + "what grew this week" | 30 h | done |
 | **M4** | Safety core + dry-run + the 6 rules + Recycle Bin execute | 60 h | wk 24 |
 | **M5** | Treemap (single canvas, spatial-index picking) | 30 h | wk 28 |
 | **M6** | Installer, self-contained publish, GitHub Releases, docs | 25 h | wk 31 |
@@ -443,28 +443,53 @@ duplicate finder · RAM subsystem · scheduled background scans.
 
 ---
 
-## 5a. Open items from M3
+## 5a. Resolved: the "cancel bug" that wasn't
 
-Two things were observed while testing M3 and are **not** resolved. Both are UI-level; the
-growth engine itself is covered by integration tests.
+During M3 testing a scan received `POST /api/scans/{id}/cancel` twice with no apparent user
+action, and it was logged as a defect. **It was not one.**
 
-1. **Scans were cancelled without anyone pressing Cancel.** During automated UI testing a
-   scan started and then received `POST /api/scans/{id}/cancel` twice, ten seconds apart,
-   with no corresponding user action. The initial guess — that an Enter keyup lands on the
-   Cancel button after React swaps in the progress view — does not fit, since a `<button>`
-   activates on Enter *keydown*, not keyup, and would not fire twice. **Cause unknown.**
-   Reproduce by starting a scan and watching `%LOCALAPPDATA%\Silt\silt.log`. Until this is
-   understood, treat cancellation as suspect.
+`api.cancel` has exactly one call site — the Cancel button's `onClick`. No effect, cleanup,
+or lifecycle path invokes it. The two calls arrived **ten seconds apart**, while the
+synthetic keystrokes under test spanned 900 ms; ten-second spacing is human timing. The
+window had also appeared unexpectedly on a second monitor during other work. The cancels
+were real clicks.
 
-2. **The growth panel has not been visually confirmed.** Its data path is verified end to
-   end by `Silt.Api.Tests`, and it reuses the rendering pattern of three panels already
-   confirmed on screen, but the panel itself has not been seen rendering real data.
+**The lesson is about the diagnosis, not the code:** an anomaly seen through an unreliable
+test harness was attributed to the application. Before filing UI behaviour as a bug, confirm
+the harness itself was in a known state.
 
-Note on verifying UI changes: driving the app with synthetic global keyboard input proved
-unreliable and, on a multi-monitor setup, unsafe — input intended for Silt reached whichever
-window actually held focus. Any future automated UI check must confirm the target window
-owns the input point *immediately before* sending anything, in the same operation. Prefer a
-real UI-automation harness (Playwright against the WebView2 host) over synthetic input.
+One genuine defect *was_* found while reading that code and has been fixed: `ScanProgress`
+listed `onDone`/`onError` in its effect dependencies, and the parent recreates both as fresh
+closures on every render — so any parent re-render tore down the poll loop and started a new
+one mid-scan. The callbacks now live in a ref and the effect depends on `scanId` alone.
+
+### Verifying the UI
+
+Driving the app with synthetic global keyboard input proved unreliable and, on a
+multi-monitor setup, **unsafe** — input intended for Silt reached whichever window actually
+held focus, and a screenshot captured an unrelated application. That approach is abandoned.
+
+The replacement is a **dev-only mock API** (`src/frontend/dev/mockApi.ts`, registered with
+`apply: 'serve'` so it cannot reach a production build). In the shipped app the API is
+served by the shell intercepting WebView2 requests, so `npm run dev` previously had no
+backend and the UI could not be reviewed in a browser at all. With fixtures modelled on real
+measurements, every panel can now be exercised in an ordinary browser with real clicks and
+no synthetic input.
+
+Two things that verification immediately caught:
+
+- **`frame-ancestors` is ignored in a `<meta>` element.** The CSP looked like it forbade
+  framing and did nothing. The shell now sends the full policy as an HTTP header on HTML
+  responses, where the directive takes effect; the meta tag remains as the dev-mode fallback
+  minus that directive.
+- **`ScanStatusDto.State` is a real enum** and therefore serializes camelCase (`completed`),
+  while the `Kind` fields are plain strings from `ToString()` and stay PascalCase. A mock
+  that got this wrong stranded the UI on the progress screen forever — a good reminder that
+  the mock must mirror the contract, not a guess at it.
+
+Note for M5: `worker-src` is absent from the CSP, so it falls back to `script-src 'self'` and
+blob-backed Web Workers are blocked. The production bundle creates none today (verified), but
+moving treemap layout into a worker will require explicitly widening the policy.
 
 ## 6. Testing destructive operations safely
 

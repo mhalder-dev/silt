@@ -65,6 +65,40 @@ internal static class StaticContent
         return File.Exists(candidate) ? candidate : null;
     }
 
+    /// <summary>
+    /// The Content-Security-Policy sent with every HTML response.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Delivered as an HTTP header rather than relying on the <c>&lt;meta&gt;</c> tag in
+    /// index.html, because <c>frame-ancestors</c> is <em>ignored</em> when delivered by a
+    /// meta element — verified in the browser console. A policy that appears to forbid
+    /// framing while doing nothing is worse than none, since it stops anyone looking again.
+    /// </para>
+    /// <para>
+    /// The meta tag stays as the fallback for <c>npm run dev</c>, where no shell exists to
+    /// set headers. The two policies are identical apart from the directives meta cannot
+    /// express, and browsers combine multiple policies restrictively, so keeping both is
+    /// safe.
+    /// </para>
+    /// <para>
+    /// Note for M5: <c>worker-src</c> is absent, so it falls back to <c>script-src 'self'</c>
+    /// and blob-backed Web Workers are blocked. If treemap layout ever moves to a worker,
+    /// this needs <c>worker-src 'self' blob:</c> — an explicit widening, not an accident.
+    /// </para>
+    /// </remarks>
+    internal const string ContentSecurityPolicy =
+        "default-src 'self'; " +
+        "script-src 'self'; " +
+        "style-src 'self' 'unsafe-inline'; " +
+        "img-src 'self' data: blob:; " +
+        "font-src 'self'; " +
+        "connect-src 'self'; " +
+        "object-src 'none'; " +
+        "base-uri 'none'; " +
+        "form-action 'none'; " +
+        "frame-ancestors 'none'";
+
     internal static string ContentTypeFor(string filePath) =>
         Path.GetExtension(filePath).ToLowerInvariant() switch
         {
