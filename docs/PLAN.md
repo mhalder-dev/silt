@@ -2,7 +2,7 @@
 
 > Silt: fine sediment that accumulates quietly until it chokes the channel.
 
-**Status:** v0.1 scaffold · **Owner:** mhalder-dev · **Last revised:** 2026-08-13
+**Status:** v0.1 pre-release, M0–M5 complete · **Owner:** mhalder-dev · **Last revised:** 2026-08-15
 
 ---
 
@@ -223,7 +223,11 @@ On a 16 GB machine currently showing ~2.66 GB available, that is real.
 > M2 went **down** despite adding a feature: the path fix reclaimed more than attribution
 > costs. Still above the 400 MB target and still WebView2-dominated (~410 MB of the 590 is
 > the six browser processes), but the trend is no longer pointing at the ~700 MB threshold.
-> Next gate: M5, when the treemap adds canvas backing stores.
+>
+> **M6 update — see §5d for the full table.** The published Release build measures
+> **468.8 MB idle** across the same 7 processes, i.e. the treemap costs nothing when nothing
+> is loaded and the single-canvas rule is holding. The *loaded* M5 figure this section asked
+> for is still owed; it needs a manual session, not automation.
 
 > **Consequences — these stop being optimizations and become requirements:**
 > - The single-canvas rule (§ below) is mandatory. Three full-viewport canvases at DPR 2 on
@@ -429,7 +433,7 @@ optional, and 2–4 h sessions on a multi-project codebase lose 20–30 % to re-
 | ~~**M3**~~ ✅ | Snapshots + growth diff + "what grew this week" | 30 h | done |
 | ~~**M4**~~ ✅ | Safety core + dry-run + the 6 rules + Recycle Bin execute | 60 h | done |
 | ~~**M5**~~ ✅ | Treemap (single canvas, spatial-index picking) | 30 h | done |
-| **M6** | Installer, self-contained publish, GitHub Releases, docs | 25 h | wk 31 |
+| **M6** 🚧 | Installer, self-contained publish, GitHub Releases, docs | 25 h | wk 31 — packaging done, release untagged |
 
 **v1.0 ≈ 235 h ≈ 31 weeks at 8 h/week.**
 
@@ -644,6 +648,105 @@ one already in §5a: build output is not behaviour.
   budget is measured. The single-canvas rule that the budget depends on *is* implemented and
   the production bundle creates no Web Worker (verified — `worker-src` is still absent from
   the CSP, so a blob worker would be blocked). **The measurement itself is still owed.**
+
+## 5d. M6 — packaging, and the bug that only packaging could find
+
+### Every published build shipped without a user interface
+
+The shell copied `src/frontend/dist` into `$(OutDir)` from a target hooked to
+`AfterTargets="Build"`. That works for `dotnet build` and is silently wrong for
+`dotnet publish`: publish does not mirror `OutDir`, it collects the items MSBuild knows
+about, and files dropped there by a custom `<Copy>` are not among them. So **every publish
+this project has ever produced contained no `wwwroot` at all** — an installer built from it
+would have reached a user and shown the "run `npm run build`" placeholder forever.
+
+Nothing caught it. Build, test, lint, typecheck and the safety gates were green throughout,
+because none of them ever produced the artifact a user receives. It was found by listing the
+publish output by hand.
+
+The fix moves the target to `BeforeTargets="AssignTargetPaths"` and contributes `Content`
+items with `<Link>` metadata, which is the one hook that feeds both the build copy and the
+publish collection. The durable fix is the **`package` CI job**: it publishes and compiles
+the installer on every push, so the shippable artifact is exercised as often as the tests
+are. This is the same lesson as §5a and §5c — build output is not behaviour — applied to
+packaging.
+
+`scripts/publish.ps1` verifies rather than trusts: exe present and large enough to genuinely
+be self-contained, `wwwroot/index.html` and `wwwroot/assets` present, at least one JS bundle,
+and `index.html` referencing a bundle that actually exists (a stale `dist/` passes every
+other check and still yields a blank window). Verified by removing `dist/` and re-running:
+three errors, exit 1.
+
+### Measured
+
+| | |
+|---|---|
+| Publish payload | **134.9 MB** (`Silt.exe` 134.6 MB self-contained single-file + 245 KB `wwwroot`) |
+| Installer (LZMA2 max) | **43 MB** |
+| ISCC compile | clean, no warnings |
+
+Reference XML docs are now excluded from publish (`AllowedReferenceRelatedFileExtensions`),
+dropping 0.76 MB of WebView2 IntelliSense payload nothing reads at runtime. PDBs stay — a
+stack trace from a user's machine is worth far more than the ~100 KB.
+
+### The uninstaller must not delete the WebView2 cache
+
+The obvious `[UninstallDelete]` entry — drop `{localappdata}\Silt\WebView2`, which is pure
+regenerable cache — is wrong, and Inno Setup says so at compile time
+(`UsedUserAreasWarning`). With `PrivilegesRequired=admin` the uninstaller runs elevated, so
+`{localappdata}` resolves to the **administrator's** profile. On a machine with a separate
+admin account it deletes a directory belonging to someone who never ran Silt and misses the
+real one. Resolved by deleting nothing on uninstall, which is also the right answer for the
+snapshots and the operation journal regardless: they are the user's scan history and the
+audit trail of what Silt deleted for them.
+
+`runasoriginaluser` on the post-install launch is load-bearing for the same class of reason.
+Without it, setup's admin token is inherited by the first ever run of Silt — the one thing
+§2.1 says must never happen — and it would create `%LOCALAPPDATA%\Silt\WebView2` at high
+integrity, which every later ordinary launch then contends with. The damage outlives the
+install.
+
+### Version has one source
+
+The git tag stamps `Silt.exe` via `-p:Version=`; the installer reads its version back out of
+the built exe rather than carrying its own copy. An installer labelled 0.2.0 therefore cannot
+contain a 0.1.0 binary. `Directory.Build.props` supplies the development default only when
+nothing overrides it — unconditional, it silently beat the workflow and every release would
+have shipped stamped 0.1.0.
+
+Releases are **drafts**. A mistyped tag should not put an installer in front of the world
+with no step in between where a human looks at it.
+
+### M5's owed memory measurement — partly paid
+
+§2.4 required a re-measurement at M5 and §5c recorded it as still owed. Taken now against the
+**published Release single-file build**, process tree only (an earlier reading of 896.7 MB
+across 19 processes was wrong — `Get-Process msedgewebview2` catches every WebView2 app on
+the machine, not Silt's):
+
+| Milestone | Total | Shell process | Processes |
+|---|---|---|---|
+| M0 — static page | 470.5 MB | 110.6 MB | 7 |
+| M1 — C: scan resident | 627.5 MB | 235.7 MB | 7 |
+| M2 — scan + attribution | 590.0 MB | 180.2 MB | 7 |
+| **M6 — published build, idle** | **468.8 MB** | **123.1 MB** | 7 |
+
+The treemap code is present and the single-canvas rule holds: still 7 processes, and idle
+cost is indistinguishable from M0's. **This is not the measurement §2.4 asked for.** It is
+the idle figure. A scan-plus-treemap-resident reading requires driving the WPF window, and
+§5a abandoned synthetic global input as unreliable and, on a multi-monitor setup, unsafe.
+**The loaded M5 figure is still owed** and needs a deliberate manual session, not automation.
+
+### Left unverified, stated plainly
+
+- **The installer has never been run.** It compiles clean and the compile log accounts for
+  all ten payload files, but install, upgrade-over-existing, and uninstall are unexercised:
+  each needs an interactive UAC prompt, and these runs are unattended. Do this by hand, on a
+  VM, before tagging anything.
+- **The release workflow has never fired.** It is tag-triggered and no tag exists. The
+  `package` CI job exercises the publish-and-compile half of it on every push; the
+  `gh release create` half is unproven.
+- **`devicePixelRatio` remains exercised only at DPR 1** (carried from §5c).
 
 ## 6. Testing destructive operations safely
 

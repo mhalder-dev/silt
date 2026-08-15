@@ -65,6 +65,58 @@ jobs:
       - name: Test
         run: dotnet test --no-build --configuration Release --filter "Category!=Destructive&Category!=Benchmark"
 
+  # ---------------------------------------------------------------------------
+  # Package the real shippable artifact on every push, not only on a release tag.
+  #
+  # This job exists because the packaging path failed silently for the entire life of the
+  # project and nothing noticed: the shell copied the SPA into $(OutDir) after Build, which
+  # `dotnet publish` does not mirror, so every published build shipped with no wwwroot at
+  # all. Build, test, lint and typecheck were all green throughout. The only way to catch
+  # that class of defect is to actually produce the artifact users receive.
+  # ---------------------------------------------------------------------------
+  package:
+    name: Package
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Publish payload
+        shell: pwsh
+        run: pwsh scripts/publish.ps1
+
+      - name: Ensure Inno Setup
+        shell: pwsh
+        run: |
+          $iscc = Get-ChildItem 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe','C:\Program Files\Inno Setup 6\ISCC.exe' -ErrorAction SilentlyContinue |
+                  Select-Object -First 1 -ExpandProperty FullName
+          if (-not $iscc) {
+            Write-Host 'Inno Setup not present in the image; installing.'
+            choco install innosetup --no-progress -y
+            $iscc = Get-ChildItem 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe','C:\Program Files\Inno Setup 6\ISCC.exe' -ErrorAction SilentlyContinue |
+                    Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (-not $iscc) { throw 'ISCC.exe still not found after install.' }
+          "ISCC=$iscc" >> $env:GITHUB_ENV
+
+      # Compiling the installer is what proves the .iss still matches the payload - a
+      # renamed or missing source file is a compile error here rather than a broken download.
+      - name: Compile installer
+        shell: pwsh
+        run: |
+          & $env:ISCC installer\silt.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed ($LASTEXITCODE)" }
+          $setup = Get-ChildItem artifacts/installer -Filter *.exe | Select-Object -First 1
+          if (-not $setup) { throw 'No installer produced.' }
+          Write-Host ('Installer: {0} ({1} MB)' -f $setup.Name, [math]::Round($setup.Length / 1MB, 1))
+
   frontend:
     name: Frontend
     runs-on: ubuntu-latest

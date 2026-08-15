@@ -63,8 +63,28 @@ Silt deletes files, so the safety machinery is the product:
 
 ## Status
 
-🚧 **Pre-alpha — scaffolding.** Not yet usable. See [`docs/PLAN.md`](docs/PLAN.md) for the
-full plan of record, milestones, and the architecture review that shaped it.
+🚧 **Pre-release.** Every capability above is built and verified: the scanner, per-app
+attribution, snapshots and growth diffs, the cleanup engine, and the treemap. M6 —
+packaging — is in progress, so there is no published release to download yet.
+
+| | |
+|---|---|
+| M0 · Shell | ✅ WPF + WebView2 + React |
+| M1 · Scanner | ✅ Whole `C:` in ~9 s, hardlink de-duplicated |
+| M2 · Attribution | ✅ Per-app totals across scattered install locations |
+| M3 · Snapshots | ✅ History and growth diffing |
+| M4 · Cleanup | ✅ Denylist, dry-run, Recycle Bin, capacity refusal |
+| M5 · Treemap | ✅ Squarified, one canvas, spatial-index picking |
+| M6 · Packaging | 🚧 Installer and release pipeline |
+
+See [`docs/PLAN.md`](docs/PLAN.md) for the plan of record, the milestone table, and the
+architecture review that shaped it.
+
+## Installing
+
+Not yet — there is no published release. When there is, it will be a signed-by-nobody,
+checksummed, self-contained installer; [`docs/INSTALL.md`](docs/INSTALL.md) covers what it
+does, why it elevates once and never again, and where Silt keeps your data.
 
 ## Building
 
@@ -76,6 +96,14 @@ cd silt
 dotnet build
 npm --prefix src/frontend install
 npm --prefix src/frontend run dev
+```
+
+To produce the shippable artifact — the SPA plus a self-contained single-file exe, both
+verified — and then the installer (needs [Inno Setup 6](https://jrsoftware.org/isinfo.php)):
+
+```powershell
+pwsh scripts/publish.ps1
+iscc installer\silt.iss
 ```
 
 ## License

@@ -1,0 +1,119 @@
+name: Release
+
+# Tag-driven. Pushing v0.1.0 publishes a draft release; a human reviews and presses publish.
+# Auto-publishing would mean a mistyped tag ships a signed-looking installer to the world
+# with no step in between where anyone looks at it.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build and upload artifacts only - create no release'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+
+jobs:
+  release:
+    name: Build installer
+    runs-on: windows-latest
+    permissions:
+      contents: write   # required to create the release; nothing else in this workflow writes
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # The tag is the source of truth for the shipped version. Setting it here rather than
+      # editing Directory.Build.props per release means the exe's version resource, the
+      # installer filename, and the git tag cannot disagree - and the installer reads its
+      # version from the exe, so all three come from this one line.
+      - name: Derive version from tag
+        id: version
+        shell: pwsh
+        run: |
+          $tag = '${{ github.ref_name }}'
+          if ($tag -match '^v(\d+\.\d+\.\d+)$') {
+            $version = $Matches[1]
+          } else {
+            # workflow_dispatch has no version tag. Use the committed default so a dry run
+            # still produces a coherent artifact rather than failing at the regex.
+            $version = ([xml](Get-Content Directory.Build.props)).Project.PropertyGroup.Version | Where-Object { $_ }
+            Write-Host "::notice::No v-tag on this ref; using Directory.Build.props version $version"
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "SILT_VERSION=$version" >> $env:GITHUB_ENV
+
+      # Same script developers run locally, for the same reason the safety gates are a script:
+      # a release recipe that exists only in YAML is one nobody can reproduce when it breaks.
+      - name: Publish payload
+        shell: pwsh
+        run: pwsh scripts/publish.ps1 -Version '${{ steps.version.outputs.version }}'
+
+      # Inno Setup is present in the windows-latest image, but relying on that silently is how
+      # a workflow breaks on an image update with an unhelpful "iscc not found". Check, and
+      # install only if it is genuinely absent.
+      - name: Ensure Inno Setup
+        shell: pwsh
+        run: |
+          $iscc = Get-ChildItem 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe','C:\Program Files\Inno Setup 6\ISCC.exe' -ErrorAction SilentlyContinue |
+                  Select-Object -First 1 -ExpandProperty FullName
+          if (-not $iscc) {
+            Write-Host 'Inno Setup not present in the image; installing.'
+            choco install innosetup --no-progress -y
+            $iscc = Get-ChildItem 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe','C:\Program Files\Inno Setup 6\ISCC.exe' -ErrorAction SilentlyContinue |
+                    Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (-not $iscc) { throw 'ISCC.exe still not found after install.' }
+          "ISCC=$iscc" >> $env:GITHUB_ENV
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          & $env:ISCC installer\silt.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed ($LASTEXITCODE)" }
+
+      # Publish the hashes alongside the installer. Silt is not code-signed - there is no
+      # certificate and claiming otherwise would be worse than admitting it - so a checksum
+      # the user can compare is the only integrity evidence on offer. Say so plainly rather
+      # than letting the absence of a signature go unmentioned.
+      - name: Checksums
+        shell: pwsh
+        run: |
+          $out = 'artifacts/installer'
+          Get-ChildItem $out -Filter *.exe | ForEach-Object {
+            $h = (Get-FileHash $_.FullName -Algorithm SHA256).Hash
+            "$h  $($_.Name)" | Tee-Object -Append -FilePath (Join-Path $out 'SHA256SUMS.txt')
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: silt-installer-${{ steps.version.outputs.version }}
+          path: artifacts/installer/*
+          if-no-files-found: error
+
+      - name: Draft release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create '${{ github.ref_name }}' `
+            --draft `
+            --title 'Silt ${{ steps.version.outputs.version }}' `
+            --generate-notes `
+            --notes-file installer/RELEASE_NOTES_HEADER.md `
+            (Get-ChildItem artifacts/installer/* | ForEach-Object { $_.FullName })

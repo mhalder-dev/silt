@@ -35,6 +35,13 @@
       It reproduces in CI, which restores once and then builds Release.
     -->
     <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+
+    <!--
+      Ship .pdb, drop .xml. The WebView2 package carries 0.76 MB of IntelliSense
+      documentation that nothing reads at runtime; the PDBs stay because a stack trace from
+      a user's machine is worth far more than the ~100 KB they cost.
+    -->
+    <AllowedReferenceRelatedFileExtensions>.pdb</AllowedReferenceRelatedFileExtensions>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">
@@ -77,17 +84,31 @@
     frontend in its own job. If dist/ is absent the app starts and reports exactly what to
     run, rather than failing the build for someone who only touched C#.
   -->
-  <Target Name="CopyFrontend" AfterTargets="Build">
+  <!--
+    Hooked to BeforeTargets="AssignTargetPaths", NOT AfterTargets="Build".
+
+    The earlier version <Copy>-ed straight into $(OutDir) after Build. That works for
+    `dotnet build` and is silently WRONG for `dotnet publish`: publish does not mirror
+    OutDir, it copies the items MSBuild knows about. Files dropped into OutDir by a custom
+    Copy are unknown to it, so every published build shipped with NO wwwroot at all - the
+    installed app would have reached the user and shown the "run npm run build" placeholder
+    forever. Caught by inspecting the publish output, not by any build failure.
+
+    AssignTargetPaths is the correct hook because it is where Content items are given their
+    target paths, and it runs ahead of both the build copy and the publish collection. The
+    <Link> metadata is what places them under wwwroot/ in both.
+  -->
+  <Target Name="IncludeFrontend" BeforeTargets="AssignTargetPaths">
     <ItemGroup>
       <FrontendAssets Include="$(MSBuildThisFileDirectory)..\..\frontend\dist\**\*.*" />
+      <Content Include="@(FrontendAssets)">
+        <Link>wwwroot\%(RecursiveDir)%(Filename)%(Extension)</Link>
+        <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      </Content>
     </ItemGroup>
     <Message Importance="high"
              Text="Frontend dist/ not found - the app will show build instructions on launch."
              Condition="'@(FrontendAssets)' == ''" />
-    <Copy SourceFiles="@(FrontendAssets)"
-          DestinationFiles="@(FrontendAssets->'$(OutDir)wwwroot\%(RecursiveDir)%(Filename)%(Extension)')"
-          SkipUnchangedFiles="true"
-          Condition="'@(FrontendAssets)' != ''" />
   </Target>
 
 </Project>

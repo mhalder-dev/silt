@@ -25,6 +25,17 @@
   </PropertyGroup>
 
   <PropertyGroup>
+    <!--
+      Single source of version truth. The installer reads it from the built Silt.exe rather
+      than carrying its own copy, so an installer labelled 0.2.0 cannot contain a 0.1.0 exe.
+    -->
+    <!--
+      Conditional so the release workflow can pass -p:Version=<tag> and win. An
+      unconditional <Version> here would silently override it and every tagged release would
+      ship an exe stamped 0.1.0 - and since the installer reads its version from the exe,
+      every release asset would be named 0.1.0 too.
+    -->
+    <Version Condition="'$(Version)' == ''">0.1.0</Version>
     <Product>Silt</Product>
     <Company>mhalder-dev</Company>
     <Authors>mhalder-dev</Authors>
