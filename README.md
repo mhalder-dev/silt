@@ -99,8 +99,9 @@ npm --prefix src/frontend run dev
 ```
 
 Tests. The frontend suite covers the treemap's geometry — rectangles staying inside their
-parents, siblings never overlapping, and the spatial index agreeing with brute force — none
-of which a typecheck or a lint can see:
+parents, siblings never overlapping, the spatial index agreeing with brute force, and the
+backing store being sized correctly and allocated once — none of which a typecheck or a lint
+can see:
 
 ```bash
 dotnet test --filter "Category!=Destructive&Category!=Benchmark"

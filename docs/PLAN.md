@@ -246,6 +246,8 @@ reserves nothing, frees nothing, and merely converts a large heap into a hard OO
 - **One canvas, not three.** Picking via a spatial index (interval tree over the squarified
   layout) computed in JS — not a second readback canvas. Avoids the `getImageData`
   premultiplication/antialiasing id-collision bug review identified, *and* the backing store.
+  **The canvas is also allocated once and reused** — see §5f for the mousemove that was
+  reallocating it, and for the 8 M device-pixel area cap that now bounds it.
 - **Cull to `minArea ≥ 9 px²`** before upload — 3k–15k rects ever reach the canvas, not 100k.
   (Consequently: do not write a milestone promising "interactive at 100k rects" — it measures nothing.)
 - **The backend owns the tree.** The renderer receives a capped (≤8 MB) packed binary buffer
@@ -400,7 +402,7 @@ Carried forward from review essentially intact — this part of the draft was st
 | Lint | Biome | 2.x | |
 | Test (C#) | xUnit **2.9.3**, plain `Assert` | | ⚠️ Drift: this row said "xUnit v3 + Shouldly". Neither is installed — the projects reference `xunit` 2.9.3 with no assertion library. Corrected to what the repo actually builds, rather than adding packages to match a document. The `Verify.XunitV3` note stands **if** v3 is ever adopted. |
 | Property test | CsCheck | | Path-jail fuzzing |
-| Test (TS) | Vitest | 4.x | 34 tests over the treemap geometry and the byte formatter, run in CI. See §5e — the §5c browser measurements are now assertions rather than a one-off observation. |
+| Test (TS) | Vitest | 4.x | 48 tests over the treemap geometry, the pixel-ratio path and the byte formatter, run in CI. See §5e and §5f — the §5c browser measurements are now assertions rather than one-off observations. |
 | Installer | Inno Setup | | **Self-contained publish** — see below |
 
 > **Publish self-contained.** Verified on this machine: `Microsoft.WindowsDesktop.App` is
@@ -820,9 +822,108 @@ The refactor was verified against the running app on the dev mock API, not merel
   and the clear-hover-during-render fix — is still covered only by driving it by hand. Adding
   a renderer means jsdom plus a canvas stub, and a stubbed canvas would prove nothing about
   the draw loop, which is the part with cost in it.
-- **`devicePixelRatio` remains exercised only at DPR 1.** The review browser reported 1
-  again. Carried forward from §5c and §5d, now for the third time — this needs a machine or a
-  display that actually reports 1.5 or 2.
+- ~~**`devicePixelRatio` remains exercised only at DPR 1.**~~ **Closed — see §5f.**
+
+## 5f. The pixel-ratio path, finally driven — and the bug hiding behind it
+
+§5c, §5d and §5e each recorded "`devicePixelRatio` exercised only at DPR 1" and each waited
+for a 150 % display to turn up. That was the mistake: **the ratio is an input, so it can be
+supplied as one.** The arithmetic moved out of the `useEffect` into `canvas.ts`, where it is a
+pure function of three numbers, and the browser review overrode `window.devicePixelRatio` to
+drive the real component at 1.5, 2 and 3.
+
+Both halves were needed. The unit tests alone would have missed the defect below entirely,
+and the browser alone would have missed the guards.
+
+### The defect: the backing store was reallocated on every mouse move
+
+Assigning `canvas.width` discards and reallocates the backing store **even when the value
+assigned is identical** — that is how the idiom clears a canvas. The draw effect depends on
+`hover`, so it runs on every pointer move over the map, and it assigned `canvas.width`
+unconditionally. Every mousemove therefore threw away a full backing store and allocated a
+fresh one.
+
+At DPR 1 that is 1.5 MB per pointer event and easy to miss. **At DPR 2 it is 5.96 MB per
+pointer event** — and it is invisible at DPR 1, in an app §2.4 already measures as over its
+400 MB budget, whose entire single-canvas rule exists because backing store scales with the
+*square* of the pixel ratio. Measured over 200 pointer moves at DPR 2: **1,137 MiB of
+allocation churn, now zero.** The fix is a comparison before the assignment; the draw loop
+already called `clearRect` explicitly, so nothing depended on the assignment's side effect.
+
+### The second defect: a pixel-ratio change was never noticed
+
+Found only by driving it. There is no `devicePixelRatio` change event, and the ratio was read
+inline inside the draw effect — whose dependencies are the data, the layout, the width and the
+hover. Dragging the window from a 100 % monitor to a 150 % one changes **none of those**, so
+the canvas kept its old backing store and the map stayed soft (or over-sharp) until some
+unrelated re-render happened to fix it. Observed exactly that: after a simulated 2 → 1.5
+change the store sat at 1620 × 920 until a stray pointer move corrected it.
+
+Now the ratio lives in state, subscribed via `matchMedia('(resolution: Ndppx)')` — which is
+one-shot by construction, since the query stops matching the instant the ratio moves, so the
+listener re-establishes against the new value each time.
+
+### Area, not ratio, is what gets capped
+
+The obvious guard is a maximum `devicePixelRatio`, and it is wrong: browser zoom multiplies
+the reported ratio while shrinking the CSS pixel count by the same factor, so a DPR ceiling
+blurs the map for anyone zoomed in and saves nothing. The cap is therefore on backing-store
+**area** — 8 M device pixels, a 32 MB ceiling. A full-width 4K window at DPR 2 is 3.07 M and
+is not touched. Without the cap, a 3840 × 2160 viewport at DPR 4 asks for **132.7 M device
+pixels — 530 MB of backing store on one canvas.**
+
+`normalizeDpr` also rejects what `window.devicePixelRatio || 1` lets through: that idiom
+handles `0` and `NaN` and passes `Infinity` and negatives straight to `canvas.width`, which
+throws `IndexSizeError` and takes the whole panel down.
+
+### Measured — unit, at the ratios real displays report
+
+| DPR | CSS px | Backing store |
+|---|---|---|
+| 1 | 810 × 460 | 810 × 460 |
+| 1.25 | 810 × 460 | 1013 × 575 |
+| 1.5 | 810 × 460 | 1215 × 690 |
+| 2 | 810 × 460 | 1620 × 920 |
+| 3 | 810 × 460 | 2430 × 1380 |
+
+Rounding, not truncation: 811 CSS px at DPR 1.5 wants 1216.5 device pixels, and flooring
+loses the right-hand half pixel on every odd width — a hairline seam that appears only on
+150 % displays, i.e. never on the developer's machine.
+
+### Mutation-checked, as §9 requires
+
+| Mutation | Caught by | Signal |
+|---|---|---|
+| `Math.round` → `Math.floor` | backing-store size | 1216 against 1217 at DPR 1.5 |
+| Reallocation guard removed | allocation count | **101 allocations against 1** |
+| Area cap removed | backing-store area | **132,710,400 px against a cap of 8,000,000** |
+| `normalizeDpr` → the `\|\| 1` idiom | ratio normalization | `Infinity` reached `canvas.width` |
+
+### Measured — in the browser, against the running app at DPR 2
+
+| | |
+|---|---|
+| CSS size / backing store | 810 × 460 / **1620 × 920** |
+| Device pixels sampled | 93,150 |
+| Painted | **100 %** — including the last device column and the last device row |
+| Backing-store reallocations over 200 pointer moves | **0** (was 200) |
+| Allocation churn avoided | **1,137 MiB** |
+| Reallocations for a 2 → 1.5 ratio change | **1**, and the CSS size stayed 810 px |
+| Console errors / uncaught errors | **0 / 0** |
+
+The last-column and last-row probes are the ones that matter: a drawing scale that disagrees
+with the backing store by any amount leaves exactly that strip unpainted and nothing else
+looks wrong. Sampling every fourth pixel would have missed it.
+
+### Left unverified, stated plainly
+
+- **The `matchMedia` subscription was fired synthetically, not by a real monitor move.** The
+  ratio was overridden and the `change` event dispatched by hand. The listener, the
+  re-subscription and the redraw are all observed; what is *not* observed is the browser
+  choosing to fire it. That needs two displays at different scale factors.
+- **Still no measurement inside the WebView2 shell.** All of the above was taken in an
+  ordinary browser on the dev mock API. The loaded-treemap memory figure §2.4 asks for
+  remains owed, unchanged from §5d.
 
 ## 6. Testing destructive operations safely
 

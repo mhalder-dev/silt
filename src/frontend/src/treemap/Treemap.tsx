@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { formatBytes } from '../format'
+import { applyCanvasGeometry, canvasGeometry, dprQuery, normalizeDpr } from './canvas'
 import {
   childBearingNodes,
   layoutTreemap,
@@ -84,6 +85,19 @@ export function Treemap({
     return () => observer.disconnect()
   }, [])
 
+  // Held in state rather than read inline in the draw effect. The ratio can change with
+  // nothing else changing — drag the window to a monitor at a different scale factor and the
+  // data, the layout and the CSS width are all identical — so an inline read leaves the
+  // backing store stale until some unrelated re-render happens to fix it. Observed: after a
+  // simulated 2 → 1.5 change the canvas kept its 1620 x 920 store until a pointer move.
+  const [dpr, setDpr] = useState(() => normalizeDpr(window.devicePixelRatio))
+  useEffect(() => {
+    const query = window.matchMedia(dprQuery(dpr))
+    const onChange = () => setDpr(normalizeDpr(window.devicePixelRatio))
+    query.addEventListener('change', onChange)
+    return () => query.removeEventListener('change', onChange)
+  }, [dpr])
+
   const layout: Layout | null = useMemo(
     () => (width > 0 ? layoutTreemap(data.nodes, width, HEIGHT) : null),
     [data, width],
@@ -126,17 +140,18 @@ export function Treemap({
     if (!canvas || !layout || width <= 0) return
 
     // devicePixelRatio, not a hardcoded 2. On a 150 % display a 2x backing store is resampled
-    // by the compositor and every edge in the map goes soft.
-    const dpr = window.devicePixelRatio || 1
-    canvas.width = Math.round(width * dpr)
-    canvas.height = Math.round(HEIGHT * dpr)
-    canvas.style.width = `${width}px`
-    canvas.style.height = `${HEIGHT}px`
+    // by the compositor and every edge in the map goes soft. The arithmetic, the guards and
+    // the reason this must not reallocate on every hover all live in canvas.ts, where they
+    // are testable without a renderer.
+    const geometry = canvasGeometry(width, HEIGHT, dpr)
+    applyCanvasGeometry(canvas, geometry)
 
     const ctx = canvas.getContext('2d')
     if (!ctx) return
 
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    // Unconditional, because a frame that did not reallocate still carries the previous
+    // frame's transform, and one that did has had it reset to identity.
+    ctx.setTransform(geometry.scale, 0, 0, geometry.scale, 0, 0)
     ctx.clearRect(0, 0, width, HEIGHT)
     ctx.font = '11px "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif'
     ctx.textBaseline = 'top'
@@ -183,7 +198,7 @@ export function Treemap({
       ctx.lineWidth = 2
       ctx.strokeRect(hover.rect.x + 1, hover.rect.y + 1, hover.rect.w - 2, hover.rect.h - 2)
     }
-  }, [data, layout, width, hover])
+  }, [data, layout, width, hover, dpr])
 
   const onMove = useCallback(
     (event: React.MouseEvent<HTMLCanvasElement>) => {
