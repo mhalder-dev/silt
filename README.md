@@ -98,6 +98,16 @@ npm --prefix src/frontend install
 npm --prefix src/frontend run dev
 ```
 
+Tests. The frontend suite covers the treemap's geometry — rectangles staying inside their
+parents, siblings never overlapping, and the spatial index agreeing with brute force — none
+of which a typecheck or a lint can see:
+
+```bash
+dotnet test --filter "Category!=Destructive&Category!=Benchmark"
+npm --prefix src/frontend test
+pwsh scripts/safety-gates.ps1
+```
+
 To produce the shippable artifact — the SPA plus a self-contained single-file exe, both
 verified — and then the installer (needs [Inno Setup 6](https://jrsoftware.org/isinfo.php)):
 

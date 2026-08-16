@@ -2,7 +2,7 @@
 
 > Silt: fine sediment that accumulates quietly until it chokes the channel.
 
-**Status:** v0.1 pre-release, M0–M5 complete · **Owner:** mhalder-dev · **Last revised:** 2026-08-15
+**Status:** v0.1 pre-release, M0–M5 complete · **Owner:** mhalder-dev · **Last revised:** 2026-08-16
 
 ---
 
@@ -400,7 +400,7 @@ Carried forward from review essentially intact — this part of the draft was st
 | Lint | Biome | 2.x | |
 | Test (C#) | xUnit **2.9.3**, plain `Assert` | | ⚠️ Drift: this row said "xUnit v3 + Shouldly". Neither is installed — the projects reference `xunit` 2.9.3 with no assertion library. Corrected to what the repo actually builds, rather than adding packages to match a document. The `Verify.XunitV3` note stands **if** v3 is ever adopted. |
 | Property test | CsCheck | | Path-jail fuzzing |
-| Test (TS) | *(none yet)* | | ⚠️ Drift: Vitest is not installed and no frontend test script exists. The treemap's geometry invariants were verified by driving the real module in a browser instead (§5c); that is evidence, but it is not a regression gate. **Adding Vitest is the highest-value frontend follow-up.** |
+| Test (TS) | Vitest | 4.x | 34 tests over the treemap geometry and the byte formatter, run in CI. See §5e — the §5c browser measurements are now assertions rather than a one-off observation. |
 | Installer | Inno Setup | | **Self-contained publish** — see below |
 
 > **Publish self-contained.** Verified on this machine: `Microsoft.WindowsDesktop.App` is
@@ -748,6 +748,82 @@ the idle figure. A scan-plus-treemap-resident reading requires driving the WPF w
   `gh release create` half is unproven.
 - **`devicePixelRatio` remains exercised only at DPR 1** (carried from §5c).
 
+## 5e. The treemap's invariants became a gate
+
+§5c measured the treemap's geometry by driving the real module from a browser console and
+recorded the numbers: 0 child rectangles escaping their parent, 0 overlapping siblings, 0 hit
+tests disagreeing with brute force over 4,000 points. That was evidence and it was **not a
+gate** — nothing would have caught a later edit that broke any of it, because a treemap whose
+rectangles overlap passes build, typecheck and lint without complaint. §4 named adding Vitest
+the highest-value frontend follow-up. It is now installed, wired into the `frontend` CI job,
+and 34 tests run in **~0.5 s**.
+
+The pure, DOM-free split that §5c made for testability is what allowed this: `layout.ts` needs
+no canvas, no jsdom and no renderer to be driven hard.
+
+### One refactor came with it
+
+`openTarget` — the click-resolution rule, and the source of the "0 % of the map was clickable"
+defect — lived inside `Treemap.tsx` as a `useCallback`, where it could not be tested without a
+React renderer. It is now `resolveOpenTarget` in `layout.ts`, called by an unchanged
+component. The behaviour is identical; only its reachability changed.
+
+### Tests that would not have failed are worthless, so they were mutation-checked
+
+Each of the three load-bearing assertions was verified by breaking the code under it and
+confirming a red run — not by observing that it passed:
+
+| Mutation | Caught by | Signal |
+|---|---|---|
+| `horizontal = w >= h` → `true` (rows always laid one way) | containment | child at 199.87 px against a parent ending at 186.25 px |
+| Row never closed (i.e. slice-and-dice) | aspect ratio | **median 1025.4** against a bound of 3 |
+| Rectangle bucketed into its first column only | pick vs brute force | `null` returned where rect 134 was |
+
+The slice-and-dice result is the useful one: that mutation satisfies **every** containment and
+overlap assertion while producing slivers, so the aspect-ratio bound is the only thing
+standing between "squarified" and "merely subdivided".
+
+### Measured on the deterministic test fixture (810 × 460 CSS px)
+
+| | depth 5 | depth 7 |
+|---|---|---|
+| Nodes projected | 1,180 | 15,160 |
+| Rectangles drawn | 663 | **1,464** |
+| Culled below 9 px² | 312 | 2,244 |
+| Aspect ratio, median / p95 | 1.52 / 4.69 | **1.51 / 3.51** |
+| Points resolving to something clickable | 81.3 % | 81.3 % |
+| Layout time | 2.05 ms | **2.75 ms** |
+| 2,000 hit tests | 1.37 ms | 1.33 ms |
+
+Median 1.51 against the 1.45 §5c measured on the dev fixture, and 81.3 % clickable against
+83 % — two independent fixtures agreeing to within noise, which is the corroboration that
+matters more than either number alone. A 15,160-node tree still reaches the canvas as 1,464
+rectangles, and the whole layout costs 2.75 ms.
+
+### Re-driven in the browser, because build output is still not behaviour
+
+The refactor was verified against the running app on the dev mock API, not merely compiled:
+
+- **One canvas**, 810 × 460 CSS px, backing store 810 × 460 at DPR 1, **100 % of sampled
+  pixels painted** — no gaps.
+- Hover resolution correct on every point sampled, including the two cases with opposite
+  answers: the root's own `(files here)` offers no destination, while a nested `(files here)`
+  correctly offers *"click to open Windows"*.
+- A click navigated from the root to `C:\ › Users › index-1 › snapshots-3 › bin-2` and
+  redrew at *1.3 GiB in view · 4 rectangles drawn*, with **no uncaught errors** — the §5c
+  zoom crash stays fixed.
+
+### Left unverified, stated plainly
+
+- **`Treemap.tsx` itself has no test.** The gate covers the pure layout, picking, click
+  resolution and formatting; the React component — the canvas draw loop, the ResizeObserver,
+  and the clear-hover-during-render fix — is still covered only by driving it by hand. Adding
+  a renderer means jsdom plus a canvas stub, and a stubbed canvas would prove nothing about
+  the draw loop, which is the part with cost in it.
+- **`devicePixelRatio` remains exercised only at DPR 1.** The review browser reported 1
+  again. Carried forward from §5c and §5d, now for the third time — this needs a machine or a
+  display that actually reports 1.5 or 2.
+
 ## 6. Testing destructive operations safely
 
 Never against the real filesystem. Four independent interlocks:
@@ -804,6 +880,9 @@ A change is done when:
 
 - [ ] Builds clean with `TreatWarningsAsErrors` and nullable enabled
 - [ ] Unit tests pass; path-jail property tests pass **on Windows** (not only Ubuntu)
+- [ ] Frontend tests pass (`npm --prefix src/frontend test`), and any new geometry
+      invariant was mutation-checked — a test confirmed red against broken code, not merely
+      observed green against working code
 - [ ] Any filesystem mutation goes through `SandboxedFileSystem` — CI grep confirms
       (with a **recursive** file listing)
 - [ ] Any new rule has a non-null regeneration command (Rule 0)

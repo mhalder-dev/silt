@@ -340,6 +340,52 @@ export class SpatialIndex {
 }
 
 /**
+ * The set of nodes that have at least one child in this projection.
+ *
+ * Separate from `resolveOpenTarget` so the component can memoize it against the response
+ * rather than rebuilding it on every pointer move.
+ */
+export function childBearingNodes(nodes: readonly TreemapNodeDto[]): Set<number> {
+  const set = new Set<number>()
+  for (let i = 1; i < nodes.length; i++) set.add(nodes[i].p)
+  return set
+}
+
+/**
+ * Resolves a pointed-at node to the folder a click should open, or null for nowhere.
+ *
+ * Not simply "the node under the cursor", and the difference is the whole feature. A
+ * subdivided folder is almost entirely covered by its own children, so the only part of it a
+ * pointer can ever reach is the thin label band at its top. Measured on the dev fixture,
+ * targeting the node itself left **0 %** of sampled points clickable — a map that reads as
+ * broken rather than as deliberately restricted. Resolving upward to the nearest folder that
+ * has something to show took that to 83 %, the remainder being the root's own `(files here)`
+ * box, which correctly has nowhere to go.
+ *
+ * Lives here, in the pure module, rather than in the component: it is the piece of click
+ * behaviour with actual logic in it, and only out here can it be regression-tested.
+ */
+export function resolveOpenTarget(
+  nodes: readonly TreemapNodeDto[],
+  hasChildren: ReadonlySet<number>,
+  index: number,
+): number | null {
+  let i = index
+  if (i < 0 || i >= nodes.length) return null
+
+  // Files and Other stand for a set of things rather than one path, so they can never be a
+  // destination; the folder they belong to is what the user actually pointed at.
+  while (i > 0 && nodes[i].k !== 'Directory') i = nodes[i].p
+
+  // A folder with nothing under it in this view would open onto an empty map. `x` marks a
+  // node the backend says is expandable, i.e. it has content that this projection did not
+  // send — opening that is exactly the point.
+  if (i > 0 && !hasChildren.has(i) && !nodes[i].x) i = nodes[i].p
+
+  return i > 0 ? i : null
+}
+
+/**
  * Rebuilds a full filesystem path for a node by walking parent links.
  *
  * Only the view root carries a full path on the wire; every descendant carries a bare

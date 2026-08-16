@@ -139,5 +139,13 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      # The treemap's geometry is the one part of the frontend with real invariants in it -
+      # children inside parents, siblings not overlapping, the spatial index agreeing with
+      # brute force. Those were measured once by hand in a browser and recorded in the plan;
+      # until this step existed nothing would have caught a later edit that broke them,
+      # because lint, typecheck and build all pass on a treemap whose rectangles overlap.
+      - name: Test
+        run: npm test
+
       - name: Build
         run: npm run build

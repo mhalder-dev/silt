@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { formatBytes } from '../format'
 import {
+  childBearingNodes,
   layoutTreemap,
   pathOf,
+  resolveOpenTarget,
   type Layout,
   type TreemapNodeDto,
   type TreemapRect,
@@ -110,36 +112,12 @@ export function Treemap({
   }, [layout])
 
   /** Nodes that have at least one child in this projection. */
-  const hasChildren = useMemo(() => {
-    const set = new Set<number>()
-    for (let i = 1; i < data.nodes.length; i++) set.add(data.nodes[i].p)
-    return set
-  }, [data])
+  const hasChildren = useMemo(() => childBearingNodes(data.nodes), [data])
 
-  /**
-   * Resolves a click to the folder it should open, or null if there is nowhere to go.
-   *
-   * Not simply "the rectangle under the cursor". A subdivided folder is almost entirely
-   * covered by its own children, so the only part of it the pointer can ever reach is the
-   * thin label band at its top — measured on the fixture, targeting the rectangle itself
-   * left the great majority of the canvas inert, which reads as a broken map rather than as
-   * a deliberate restriction. Resolving upward to the nearest folder that has something to
-   * show makes every point clickable and always lands somewhere with content in it.
-   */
+  // The resolution rule itself lives in layout.ts, where it can be regression-tested; see
+  // resolveOpenTarget for why "the rectangle under the cursor" is the wrong target.
   const openTarget = useCallback(
-    (index: number): number | null => {
-      let i = index
-      if (i < 0 || i >= data.nodes.length) return null
-
-      // Files and Other stand for a set of things rather than one path, so they can never
-      // be a destination; the folder they belong to is what the user pointed at.
-      while (i > 0 && data.nodes[i].k !== 'Directory') i = data.nodes[i].p
-
-      // A folder with nothing under it in this view would open onto an empty map.
-      if (i > 0 && !hasChildren.has(i) && !data.nodes[i].x) i = data.nodes[i].p
-
-      return i > 0 ? i : null
-    },
+    (index: number): number | null => resolveOpenTarget(data.nodes, hasChildren, index),
     [data, hasChildren],
   )
 
