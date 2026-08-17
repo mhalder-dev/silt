@@ -22,7 +22,7 @@ import {
  * against a footprint the plan has already measured as over budget.
  */
 
-const HEIGHT = 460
+export const HEIGHT = 460
 
 /**
  * A rectangle must be at least this big to be labelled.
@@ -31,8 +31,8 @@ const HEIGHT = 460
  * rectangle would make text rather than geometry the cost of a frame. Below this size the
  * label is an ellipsis with nothing in front of it anyway.
  */
-const LABEL_MIN_W = 44
-const LABEL_MIN_H = 16
+export const LABEL_MIN_W = 44
+export const LABEL_MIN_H = 16
 
 /** Reported upward so the panel can say what was drawn, and what was not. */
 export type TreemapStats = {

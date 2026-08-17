@@ -2,7 +2,7 @@
 
 > Silt: fine sediment that accumulates quietly until it chokes the channel.
 
-**Status:** v0.1 pre-release, M0–M5 complete · **Owner:** mhalder-dev · **Last revised:** 2026-08-16
+**Status:** v0.1 pre-release, M0–M5 complete · **Owner:** mhalder-dev · **Last revised:** 2026-08-17
 
 ---
 
@@ -402,7 +402,7 @@ Carried forward from review essentially intact — this part of the draft was st
 | Lint | Biome | 2.x | |
 | Test (C#) | xUnit **2.9.3**, plain `Assert` | | ⚠️ Drift: this row said "xUnit v3 + Shouldly". Neither is installed — the projects reference `xunit` 2.9.3 with no assertion library. Corrected to what the repo actually builds, rather than adding packages to match a document. The `Verify.XunitV3` note stands **if** v3 is ever adopted. |
 | Property test | CsCheck | | Path-jail fuzzing |
-| Test (TS) | Vitest | 4.x | 48 tests over the treemap geometry, the pixel-ratio path and the byte formatter, run in CI. See §5e and §5f — the §5c browser measurements are now assertions rather than one-off observations. |
+| Test (TS) | Vitest | 4.x | 62 tests over the treemap geometry, the pixel-ratio path, the draw loop and the byte formatter, run in CI. See §5e, §5f and §5g — the §5c browser measurements are now assertions rather than one-off observations. jsdom is a devDependency for the component test only; the pure modules still need no DOM. |
 | Installer | Inno Setup | | **Self-contained publish** — see below |
 
 > **Publish self-contained.** Verified on this machine: `Microsoft.WindowsDesktop.App` is
@@ -817,11 +817,9 @@ The refactor was verified against the running app on the dev mock API, not merel
 
 ### Left unverified, stated plainly
 
-- **`Treemap.tsx` itself has no test.** The gate covers the pure layout, picking, click
-  resolution and formatting; the React component — the canvas draw loop, the ResizeObserver,
-  and the clear-hover-during-render fix — is still covered only by driving it by hand. Adding
-  a renderer means jsdom plus a canvas stub, and a stubbed canvas would prove nothing about
-  the draw loop, which is the part with cost in it.
+- ~~**`Treemap.tsx` itself has no test.**~~ **Closed — see §5g**, which also corrects the
+  reasoning recorded here. "A stubbed canvas would prove nothing about the draw loop" is true
+  of the loop's *cost* and false of its *decisions*, which is where the requirements are.
 - ~~**`devicePixelRatio` remains exercised only at DPR 1.**~~ **Closed — see §5f.**
 
 ## 5f. The pixel-ratio path, finally driven — and the bug hiding behind it
@@ -924,6 +922,88 @@ looks wrong. Sampling every fourth pixel would have missed it.
 - **Still no measurement inside the WebView2 shell.** All of the above was taken in an
   ordinary browser on the dev mock API. The loaded-treemap memory figure §2.4 asks for
   remains owed, unchanged from §5d.
+
+## 5g. The draw loop became testable once the question was asked properly
+
+§5e closed with a reason for leaving `Treemap.tsx` untested: *"a stubbed canvas would prove
+nothing about the draw loop, which is the part with cost in it."* That reasoning is half right,
+and the half it gets wrong is the half with the requirements in it.
+
+It is correct about **cost**. No stub measures a frame, and the browser sessions in §5c, §5e
+and §5f remain the only evidence that the map actually paints and paints fast. Nothing here
+replaces them.
+
+It is wrong about **decisions**. Every property the plan actually demands of the draw loop is a
+countable fact about which calls were issued with which arguments — and all five shipped with
+nothing enforcing them:
+
+| Requirement | Stated in |
+|---|---|
+| Exactly one canvas exists | §2.4, the rule the memory budget rests on |
+| Nothing below `MIN_AREA` is painted | §2.4 — "cull before upload" |
+| `fillText` only where a label can be read | §5c — text costs ~10x a fill |
+| The backing store is not reallocated per pointer move | §5f, the 1,137 MiB defect |
+| No hover captured against the previous view is painted | §5c defect 2, which blanked the page |
+
+A `RecordingContext` — a 2D context that logs calls rather than rasterizing — answers all five.
+14 tests, running in **185 ms**, taking the frontend suite from 48 to **62**.
+
+### The mutation run found two of the tests worthless, and both were the ones that mattered
+
+Per §9 each assertion was checked by breaking the code beneath it. The first run caught four of
+six mutations. The two that survived were the two defects that had **actually shipped**:
+
+- **The reallocation guard could be deleted with the suite green.** The harness counted a
+  backing-store write only when the value *changed* — i.e. it had independently re-implemented
+  the guard it existed to test. §5f's whole point is that a real canvas reallocates even on an
+  identical assignment. Fixed by counting every assignment; the mutation now reports **102
+  writes against 2**.
+- **Clearing hover in an effect could be restored with the suite green.** The obvious assertion
+  — "zooming does not throw" — no longer discriminates, because `resolveOpenTarget` range-checks
+  its index, so §5c's `TypeError` is now defended twice over. What still differs is what gets
+  *painted*: the stale frame strokes the old hover rectangle at coordinates from a layout that
+  no longer exists. Asserting on that catches it, reporting a 2 px highlight at **x = 347.27**
+  in a view whose layout never produced it.
+
+This is the §5e lesson turned on the tests themselves. Both tests passed on correct code, both
+looked reasonable, and both would have sat in CI indefinitely certifying nothing.
+
+### Mutation table — final run, all six caught
+
+| Mutation | Caught by | Signal |
+|---|---|---|
+| A second `<canvas>` added | single-canvas, backing store, hover, click | 5 of 14 tests red |
+| `MIN_AREA` cull floor removed | painted-rectangle floor | a rect of **2.50 px²** reached `fillRect` |
+| Label threshold removed | labelled-fraction bound | **29.1 %** labelled against a bound of 25 % |
+| Reallocation guard removed | backing-store writes | **102 against 2** over 50 pointer moves |
+| Hover cleared in an effect | stale-highlight assertion | 2 px stroke at x = 347.27 after the view changed |
+| `devicePixelRatio` subscription removed | ratio-change resize | store stayed **1620** where 1215 was due |
+
+### One assertion was wrong, and the code was right
+
+An early test required every `fillText` to fit inside its box. It failed: the byte-size second
+line is drawn **without** going through `fit`, unlike the name above it. That asymmetry is
+deliberate and correct — `measureText` is not free and runs per labelled rectangle, the size
+string is a few characters, and `clip` is its backstop. The test was narrowed to the name and
+the reason written down, rather than the code being changed to satisfy a guess.
+
+### Also folded in
+
+- The fixture builder moved to `fixture.ts` and both suites now drive the **same tree**, so
+  §5e's numbers stay comparable against the component's rather than agreeing by luck.
+- `fixture.ts` and `recordingCanvas.ts` live under `src/` and are unreachable from `main.tsx`.
+  Verified in the built bundle rather than assumed: neither symbol appears in `dist/assets/*.js`.
+
+### Left unverified, stated plainly
+
+- **This is not evidence that the map looks right.** A recorder proves which calls were issued,
+  never that pixels landed. The 100 %-painted samples in §5c and §5f remain the only evidence
+  for that, and they were taken by hand.
+- **The `ResizeObserver` and `matchMedia` are fakes.** The component's *use* of both is
+  exercised; the browser's decision to *fire* either is not — the same gap §5f recorded for the
+  pixel-ratio subscription, which still needs two displays at different scale factors.
+- **Still no loaded-treemap memory measurement inside the WebView2 shell.** Unchanged from §5d
+  and §5f. It needs a deliberate manual session and none of this touches it.
 
 ## 6. Testing destructive operations safely
 
