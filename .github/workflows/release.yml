@@ -3,15 +3,16 @@ name: Release
 # Tag-driven. Pushing v0.1.0 publishes a draft release; a human reviews and presses publish.
 # Auto-publishing would mean a mistyped tag ships a signed-looking installer to the world
 # with no step in between where anyone looks at it.
+#
+# workflow_dispatch is always a dry run - it builds, verifies and uploads the artifact, and
+# the Draft release step below is gated on the ref being a v-tag, so a dispatch cannot create
+# a release however it is invoked. There used to be a `dry_run` input here; nothing read it,
+# so setting it to false promised a release and produced none. A knob that does nothing is
+# worse than no knob, because someone eventually trusts it.
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
-    inputs:
-      dry_run:
-        description: 'Build and upload artifacts only - create no release'
-        type: boolean
-        default: true
 
 permissions:
   contents: read
@@ -41,21 +42,21 @@ jobs:
       # editing Directory.Build.props per release means the exe's version resource, the
       # installer filename, and the git tag cannot disagree - and the installer reads its
       # version from the exe, so all three come from this one line.
-      - name: Derive version from tag
+      #
+      # The rules live in scripts/release-version.ps1, which has a self-test CI runs on every
+      # push. Inline, this was six lines that had never executed - the workflow is
+      # tag-triggered and no tag has ever existed - and carried two defects that would both
+      # have fired on first use. See that script for what they were.
+      - name: Derive version from ref
         id: version
         shell: pwsh
         run: |
-          $tag = '${{ github.ref_name }}'
-          if ($tag -match '^v(\d+\.\d+\.\d+)$') {
-            $version = $Matches[1]
-          } else {
-            # workflow_dispatch has no version tag. Use the committed default so a dry run
-            # still produces a coherent artifact rather than failing at the regex.
-            $version = ([xml](Get-Content Directory.Build.props)).Project.PropertyGroup.Version | Where-Object { $_ }
-            Write-Host "::notice::No v-tag on this ref; using Directory.Build.props version $version"
-          }
+          $version = (pwsh -NoProfile -File scripts/release-version.ps1 -Ref '${{ github.ref }}' | Select-Object -Last 1)
+          if ($LASTEXITCODE -ne 0) { throw 'Version resolution failed.' }
+          $version = "$version".Trim()
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "Resolved version '$version' is not X.Y.Z." }
+          Write-Host "::notice::Building version $version from ${{ github.ref }}"
           "version=$version" >> $env:GITHUB_OUTPUT
-          "SILT_VERSION=$version" >> $env:GITHUB_ENV
 
       # Same script developers run locally, for the same reason the safety gates are a script:
       # a release recipe that exists only in YAML is one nobody can reproduce when it breaks.

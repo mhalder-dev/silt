@@ -88,6 +88,15 @@ jobs:
         with:
           node-version: '22'
 
+      # The version is the one packaging fact that fails invisibly: it is stamped into
+      # Silt.exe, read back out by the installer to name the asset, and used as the release
+      # title, so a wrong value produces a coherent-looking release that lies. This ran
+      # nowhere before - the logic lived inline in the tag-triggered release workflow, which
+      # has never fired. Milliseconds, and it belongs in the job that owns what ships.
+      - name: Version resolution self-test
+        shell: pwsh
+        run: pwsh scripts/release-version.ps1 -SelfTest
+
       - name: Publish payload
         shell: pwsh
         run: pwsh scripts/publish.ps1
