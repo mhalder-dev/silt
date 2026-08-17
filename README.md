@@ -64,8 +64,10 @@ Silt deletes files, so the safety machinery is the product:
 ## Status
 
 🚧 **Pre-release.** Every capability above is built and verified: the scanner, per-app
-attribution, snapshots and growth diffs, the cleanup engine, and the treemap. M6 —
-packaging — is in progress, so there is no published release to download yet.
+attribution, snapshots and growth diffs, the cleanup engine, and the treemap. The release
+pipeline builds a checksummed, self-contained installer and has been run end to end — but
+nobody has yet sat in front of that installer and clicked through it, so nothing is tagged
+and there is no release to download.
 
 | | |
 |---|---|
@@ -75,7 +77,7 @@ packaging — is in progress, so there is no published release to download yet.
 | M3 · Snapshots | ✅ History and growth diffing |
 | M4 · Cleanup | ✅ Denylist, dry-run, Recycle Bin, capacity refusal |
 | M5 · Treemap | ✅ Squarified, one canvas, spatial-index picking |
-| M6 · Packaging | 🚧 Installer and release pipeline |
+| M6 · Packaging | 🚧 Release pipeline runs and produces a verified 43 MB installer; that installer has not yet been run by a human |
 
 See [`docs/PLAN.md`](docs/PLAN.md) for the plan of record, the milestone table, and the
 architecture review that shaped it.

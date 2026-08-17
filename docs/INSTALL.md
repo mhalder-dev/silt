@@ -122,4 +122,15 @@ git push origin v0.1.0
 
 The version stamped into `Silt.exe`, the installer's filename, and the git tag all come from
 that one tag — the installer reads its version from the built exe rather than carrying its
-own copy.
+own copy. The rules for turning a ref into a version live in `scripts/release-version.ps1`,
+which CI self-tests on every push; a tag that is not exactly `vX.Y.Z` **fails the build**
+rather than quietly falling back to the development default and shipping an asset whose name
+disagrees with its tag.
+
+To exercise the pipeline without releasing anything, dispatch it. That builds, verifies and
+uploads the installer as a workflow artifact, and cannot create a release — the release step
+is gated on the ref being a `v` tag:
+
+```bash
+gh workflow run release.yml --ref main
+```

@@ -435,7 +435,7 @@ optional, and 2–4 h sessions on a multi-project codebase lose 20–30 % to re-
 | ~~**M3**~~ ✅ | Snapshots + growth diff + "what grew this week" | 30 h | done |
 | ~~**M4**~~ ✅ | Safety core + dry-run + the 6 rules + Recycle Bin execute | 60 h | done |
 | ~~**M5**~~ ✅ | Treemap (single canvas, spatial-index picking) | 30 h | done |
-| **M6** 🚧 | Installer, self-contained publish, GitHub Releases, docs | 25 h | wk 31 — packaging done, release untagged |
+| **M6** 🚧 | Installer, self-contained publish, GitHub Releases, docs | 25 h | wk 31 — pipeline built and run (§5h); blocked on one manual install test |
 
 **v1.0 ≈ 235 h ≈ 31 weeks at 8 h/week.**
 
@@ -745,9 +745,8 @@ the idle figure. A scan-plus-treemap-resident reading requires driving the WPF w
   all ten payload files, but install, upgrade-over-existing, and uninstall are unexercised:
   each needs an interactive UAC prompt, and these runs are unattended. Do this by hand, on a
   VM, before tagging anything.
-- **The release workflow has never fired.** It is tag-triggered and no tag exists. The
-  `package` CI job exercises the publish-and-compile half of it on every push; the
-  `gh release create` half is unproven.
+- ~~**The release workflow has never fired.**~~ **Closed — see §5h.** It has now fired, and
+  the three defects it was hiding are recorded there.
 - **`devicePixelRatio` remains exercised only at DPR 1** (carried from §5c).
 
 ## 5e. The treemap's invariants became a gate
@@ -1004,6 +1003,113 @@ the reason written down, rather than the code being changed to satisfy a guess.
   pixel-ratio subscription, which still needs two displays at different scale factors.
 - **Still no loaded-treemap memory measurement inside the WebView2 shell.** Unchanged from §5d
   and §5f. It needs a deliberate manual session and none of this touches it.
+
+## 5h. The release pipeline had never run, and was wrong in three places
+
+§5d listed *"the release workflow has never fired"* as an accepted gap on the reasoning that
+the `package` CI job exercises its publish-and-compile half on every push. That reasoning
+covered the expensive half and left the cheap half — six lines of inline PowerShell deriving
+the version — completely unexecuted. All three defects below lived in those six lines.
+
+This is §5d's own lesson (*"build output is not behaviour"*) applied one level up: a
+**pipeline** that has never run is not a pipeline, it is a draft of one, and the parts of it
+nothing else happens to cover are exactly where the defects sit.
+
+### 1. The fix that made the version overridable broke the path that reads its default
+
+§5d made `<Version>` in `Directory.Build.props` conditional so `-p:Version=<tag>` could win.
+Correct, and it silently broke the dispatch fallback, which read the file with dotted XML
+access:
+
+```powershell
+([xml](Get-Content Directory.Build.props)).Project.PropertyGroup.Version | Where-Object { $_ }
+```
+
+PowerShell's XML adapter returns a **string** for an element with no attributes and an
+**XmlElement** once it has one. Adding `Condition=` flipped it. Measured on this machine:
+that expression yields `System.Xml.XmlElement` — and, from a different call context in the
+same 5.1 session, ` Version`. The exact garbage varies; none of it is a version, and it would
+have gone straight to `dotnet publish -p:Version=`.
+
+Neither change is wrong on its own. The coupling is invisible: nothing in
+`Directory.Build.props` says a workflow parses it, and nothing in the workflow says the
+element's shape is load-bearing.
+
+### 2. A tag the pipeline could not parse produced a release rather than an error
+
+The regex was `^v(\d+\.\d+\.\d+)$` with a silent fallback for everything else — but the
+trigger is `tags: ['v*']`. Pushing `v0.1.0-rc1` would have fallen through to the props
+default and built a release **titled `v0.1.0-rc1` containing `Silt-0.1.0-win-x64-setup.exe`
+stamped 0.1.0**. Three names, two versions, and nothing red anywhere. Refusing is the only
+honest answer: a version the pipeline had to guess should not become a download.
+
+### 3. `dry_run` was declared and never read
+
+The `Draft release` step gates on `startsWith(github.ref, 'refs/tags/v')`, so a dispatch
+could never create a release regardless of the input. Setting `dry_run: false` promised one
+and produced nothing. Removed rather than wired — dispatch is *always* a dry run, and a knob
+that does nothing is worse than no knob, because someone eventually trusts it.
+
+### The rules are now a script with a self-test, and it is mutation-checked
+
+`scripts/release-version.ps1`, same principle as `safety-gates.ps1` and `publish.ps1`: one
+definition, runnable locally, run by CI. Seven cases, wired into the `package` job.
+
+| Mutation | Caught by | Signal |
+|---|---|---|
+| Restore the dotted XML read | props-default cases + the explicit text assertion | **3 failures**; version read as `' Version'` |
+| Unanchor the tag pattern to `v(\d+\.\d+\.\d+)` | prerelease + substring cases | **2 failures**; `v0.1.0-rc1` → `0.1.0`, `release-v1.2.3` → `1.2.3` |
+
+The two guards on the props read are deliberately redundant — the regex on cases 6–7 and an
+explicit assertion that the value is text — because the first would still pass if the props
+default were merely non-empty.
+
+### Measured — the first release-workflow run in the project's history
+
+Dispatched on `main` (run `32041924286`), which builds and uploads but cannot release:
+
+| | |
+|---|---|
+| Version resolved from `refs/heads/main` | **0.1.0** (was `System.Xml.XmlElement`) |
+| Publish payload | 134.9 MB · `Silt.exe` 134.6 MB |
+| Installer asset | **`Silt-0.1.0-win-x64-setup.exe`, 43.0 MB** |
+| `SHA256SUMS.txt` vs a local re-hash of the downloaded asset | **match** |
+| Job result | success |
+
+The checksum was re-computed here against the artifact actually downloaded from the run,
+rather than trusting that the step wrote *something* — an unverified checksum file is
+decoration, and it is the only integrity evidence Silt offers in place of a signature.
+
+### `gh release create` was then driven with the real artifact, and cleaned up
+
+The one step a dispatch cannot reach. Run by hand with the workflow's exact flags against the
+downloaded artifact, into a **draft** — GitHub does not create the git ref for a draft, so
+this leaves no tag — then deleted.
+
+| | |
+|---|---|
+| `--draft --title --generate-notes --notes-file` together | accepted; gh does **not** reject the combination |
+| Title | `Silt 0.1.0` — the explicit `--title` survives `--generate-notes` |
+| Body | `RELEASE_NOTES_HEADER.md` prepended, generated notes appended below its `---` |
+| Assets | both, exe byte-identical to the artifact (45,087,913 B) |
+| Git tag refs created | **0** — verified before and after |
+| After `gh release delete` | 0 releases, 0 tags |
+
+One thing to know before the real tag: with no prior release, `--generate-notes` emitted only
+a **Full Changelog** link and no commit list. That is GitHub's behaviour for a first release,
+not a broken `--notes-start-tag`, and it is why the header file carries the install
+instructions rather than assuming generated notes will say anything useful.
+
+### Left unverified, stated plainly
+
+- **The installer still has never been run**, unchanged from §5d. Nothing here touches it:
+  install, upgrade-over-existing and uninstall each need an interactive UAC prompt. It is now
+  the *only* thing standing between this repo and a taggable release, and it needs a VM and a
+  human. **Do not tag before it is done.**
+- **The tagged path is proven in parts, not end to end.** Version resolution from a `v` tag is
+  covered by the self-test, the build-and-upload half by the dispatch run, and
+  `gh release create` by the probe above — but no single run has done all three in sequence.
+  The first real tag is still the first time those parts meet.
 
 ## 6. Testing destructive operations safely
 
