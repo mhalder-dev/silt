@@ -2,7 +2,7 @@
 
 > Silt: fine sediment that accumulates quietly until it chokes the channel.
 
-**Status:** v0.1 pre-release, M0–M5 complete · **Owner:** mhalder-dev · **Last revised:** 2026-08-17
+**Status:** v0.1 pre-release, M0–M5 complete, M6 blocked on a manual install test · **Owner:** mhalder-dev · **Last revised:** 2026-08-18
 
 ---
 
@@ -436,6 +436,7 @@ optional, and 2–4 h sessions on a multi-project codebase lose 20–30 % to re-
 | ~~**M4**~~ ✅ | Safety core + dry-run + the 6 rules + Recycle Bin execute | 60 h | done |
 | ~~**M5**~~ ✅ | Treemap (single canvas, spatial-index picking) | 30 h | done |
 | **M6** 🚧 | Installer, self-contained publish, GitHub Releases, docs | 25 h | wk 31 — pipeline built and run (§5h); blocked on one manual install test |
+| **v2** 🚧 | Duplicate finder — engine and tests, no API or UI yet (§5i) | — | started, out of order, because M6's remainder needs a human |
 
 **v1.0 ≈ 235 h ≈ 31 weeks at 8 h/week.**
 
@@ -445,7 +446,8 @@ competitor, and Explorer deletes folders perfectly well once Silt has told you *
 If M4 slips or is abandoned, M0–M3 is still a product nobody else ships.
 
 **v2 backlog:** MFT scanner · optional elevation for `C:\Windows\Temp` + VSS reporting ·
-duplicate finder · RAM subsystem · scheduled background scans.
+~~duplicate finder~~ (engine landed — §5i; API and UI still owed) · RAM subsystem ·
+scheduled background scans.
 
 ---
 
@@ -1110,6 +1112,183 @@ instructions rather than assuming generated notes will say anything useful.
   covered by the self-test, the build-and-upload half by the dispatch run, and
   `gh release create` by the probe above — but no single run has done all three in sequence.
   The first real tag is still the first time those parts meet.
+
+## 5i. v2 begins: the duplicate finder, and what measuring it changed
+
+M6 is complete except for one thing that cannot be done unattended — a human installing the
+installer on a VM — so this run took the highest-value item from the v2 backlog instead.
+
+**Why the duplicate finder over the alternatives.** Of the five backlog items, three are
+gated on elevation or on hardware this run cannot touch: the MFT scanner needs a raw volume
+handle, which needs admin, which §2.1 spent its longest argument keeping out of v1; optional
+elevation is that same 60–100 h design; scheduled background scans are an accessory to
+growth tracking, which already works. The RAM subsystem is half-refused by §7 already. The
+duplicate finder is the only one that adds a **new answer to "what can I safely delete"**,
+runs entirely unelevated, and can be verified end to end by a machine with no human in front
+of it. It also matches the motivating incident directly — §1.2's `MEGA downloads` (19.45 GB,
+"two game installs, forgotten") and the extracted Android firmware images are exactly the
+shape it finds.
+
+### It reports; it does not delete
+
+`DuplicateFinder` has no capability to modify anything, and no code path from a group to a
+deletion. Acting on a group will go through the ordinary planner and `SandboxedFileSystem`,
+with the same dry-run and re-validation. That separation is not ceremony: *"these two files
+are identical"* is a measurement, and *"it is safe to remove one"* is a judgement, and only
+the first one is what this code establishes.
+
+For the same reason the finder never nominates a member for deletion. It orders a group
+shortest-path-first because the shortest path is usually the original, but that is a display
+decision, not a recommendation.
+
+### The funnel, and why each stage is where it is
+
+The naive implementation hashes every file. On this machine's `LocalAppData` that is 241,148
+files; on the whole volume it is roughly 900 GB of reading to answer a question that needs
+about one percent of it. The stages, in order:
+
+| Stage | What it does | What it costs |
+|---|---|---|
+| 1. Size | Group by exact **logical** size, from directory metadata | No file opened |
+| 2. File id | Collapse hardlinks within a size group | No file opened |
+| 3. Denylist | Drop what the safety layer would refuse anyway | No file opened |
+| 4. Head hash | SHA-256 of the first 4 KiB | One cluster per candidate |
+| 5. Full hash | SHA-256 of everything that survived | One full read |
+| 6. Bytes | Compare each member against the group's first | A second full read |
+
+Three of those orderings were chosen against an obvious alternative and are worth recording:
+
+- **Logical size, not allocated size.** Two identical files have different allocation if one
+  is NTFS-compressed and the other is not. Grouping on allocation — which is the figure the
+  scanner reports everywhere else, because it is what free space responds to — silently
+  misses exactly that pair.
+- **Hardlink collapse happens per size group, not globally.** `BfsScanner` maintains a
+  volume-wide file-id set because it needs one for its totals. Here a file id only matters
+  once something else shares its size, so the set is built per bucket and thrown away. It
+  found **2,933** additional hardlinks under `LocalAppData` that would otherwise have been
+  reported as duplicates promising space that does not exist.
+- **The denylist check runs after size grouping, not during enumeration.** `Denylist.Check`
+  splits the path and scans it against three lists; over 241,148 files that is real time, and
+  over the 67,600 that share a size with something it is not. It excluded **168** files.
+
+### Cloud placeholders: the trap this code was the first to be able to fall into
+
+`ReparseTags.IsCloudPlaceholder` has carried a comment since M1 saying *"any future code that
+opens files must honour it"* — the scanner reads directory metadata only, so it never could.
+This is the first code in Silt that opens files, and therefore the first that could hydrate a
+OneDrive placeholder by reading it. A duplicate search over a synced profile that did not
+check would quietly pull gigabytes over the network and **fill the very disk it was asked to
+free**. The check tests the three recall attributes and the cloud reparse tags before any
+open. It reported 0 skips on this machine, which means the guard is unexercised here — an
+honest zero, not a passing test.
+
+### Measured — `%LOCALAPPDATA%`, 2026-08-18
+
+| | |
+|---|---|
+| Files examined | 241,148 |
+| Candidates (shared a size with something) | 67,600 |
+| Bytes actually read | **9.05 GiB** |
+| Duplicate groups | 5,334 |
+| **Reclaimable** | **2.37 GiB** |
+| Hardlinks collapsed | 2,933 |
+| Denylisted files excluded | 168 |
+| Cloud placeholders skipped | 0 |
+| Unreadable files | 391–447 across three runs (locked by running applications) |
+| Directories access-denied | 1 |
+
+The largest findings are real and unsurprising in hindsight: two 407.7 MiB copies of one
+Electron updater's `installer.exe`, **33 copies** of a 2 MiB JetBrains JCEF cache blob
+totalling 64.3 MiB reclaimable, 20 copies of a packed npm artifact under `Temp`, and 9 copies
+of a 2.6 MiB Edge speech-recognition DLL. No existing free tool surfaces any of them.
+
+### The measurement found a defect, which is the point of measuring
+
+The first run took **459.59 s**. Profiling by construction rather than by tool: verification
+reads every confirmed duplicate a second time, and 2 × 2.37 GiB of reclaimable content is
+**4.74 GiB — over half of the 9.05 GiB the whole search read** — and stage 6 was running on
+one thread inside a `foreach` while the hashing stages used every core.
+
+Parallelizing stage 6 across groups, same build, same tree, same 9.05 GiB read and the same
+5,334 groups:
+
+| Run | `DegreeOfParallelism` | Duration |
+|---|---|---|
+| Sequential stage 6 (first run, cold cache) | 16 | 459.59 s |
+| Parallel stage 6 | 16 | **224.95 s** |
+| Parallel stage 6, control | 1 | 765.83 s |
+
+The control run is the one that makes this a measurement rather than an anecdote. The
+second run had a warm page cache and could have been fast for that reason alone, so the same
+build was run a third time with `DegreeOfParallelism = 1` — same warm cache, same tree, only
+the parallelism changed. At 765.83 s it is *slower* than the original cold run, which settles
+it: the 2.04x is parallelism, not caching, and the full spread from one thread to sixteen is
+**3.40x**.
+
+One caveat on comparing the three rows: `LocalAppData` is live. Between runs the file count
+moved 241,148 → 241,154 and the group count 5,334 → 5,305, because browsers and IDEs were
+writing caches throughout. The differences are well under a percent and do not touch the
+conclusion, but the rows are not byte-identical workloads and should not be read as though
+they were.
+
+Parallelizing the group loop also made the report order nondeterministic — a `ConcurrentBag`
+hands groups back in whatever order it likes, and groups that free identical amounts then
+swap places between runs over an unchanged tree, which reads as though the tree changed. The
+sort is tie-broken on the first path.
+
+### Throughput is the honest complaint
+
+Even at 224.95 s the search moves about **41 MiB/s**, which is far below what this SSD does.
+The cost is not the hashing — SHA-256 with hardware acceleration is not the bottleneck at
+these rates — it is per-file `CreateFile` plus Defender's real-time scan on every one of
+67,600 opens. That is a hypothesis, not a measurement: **it has not been confirmed**, and
+confirming it means running the same search with a Defender exclusion on the scratch path and
+comparing. Recorded here so the next run does not re-derive it.
+
+### The tests, and the two that gated nothing
+
+Thirteen behavioural tests over a real scratch tree, running in ~0.45 s. Five were confirmed
+**red against a deliberately broken build** before being accepted:
+
+| Mutation | Test that caught it |
+|---|---|
+| Head hash returns a constant | `SeparatesSameSizedFilesThatDifferAtTheStart` |
+| Full-hash pass deleted | `SeparatesFilesThatDifferOnlyAfterTheHeadSample` |
+| Small-file shortcut swallows the head pass too | `StillSeparatesDifferingFilesAtExactlyTheHeadSampleSize` |
+| `VerifyByteForByte` ignored | `ReadsEveryConfirmedByteAgainWhenVerificationIsOn` |
+| Hardlink collapse keyed on index, not file id | `DoesNotReportHardLinksToTheSameFile` |
+
+**Two of them initially passed under mutation**, and that is the finding worth keeping. The
+full-hash test and the head-sample-shortcut test both ran with byte verification on, so when
+the stage they named was deleted, stage 6 quietly caught what got through and the test still
+went green — they gated the backstop, not the stage in their own name. Both now run with
+`VerifyByteForByte: false`, and both now fail against the same mutations. This is §5e's
+lesson arriving a second time: a test observed green against working code has established
+nothing about what it would catch.
+
+A third test was **deleted rather than fixed**. `ByteComparisonRejectsAPairTheHashesAccepted`
+claimed to gate stage 6's rejection branch and could not: any pair that differs anywhere is
+already separated by the full hash, so the test passed against a build that ignored
+`VerifyByteForByte` entirely. There is no input this suite can construct that reaches that
+branch — it fires only on a SHA-256 collision or a file mutated mid-search. A test that
+cannot fail is worse than no test, because it reads like coverage.
+
+### Left unverified, stated plainly
+
+- **Stage 6's rejection branch is unexercised**, for the reason above. That the verification
+  *runs* is gated by its read cost; that it correctly *rejects* is not, and cannot be without
+  a constructed collision.
+- **The cloud-placeholder skip is unexercised.** This machine reported 0 placeholders. The
+  guard is the single most consequential branch in the file — getting it wrong downloads a
+  user's OneDrive onto the disk they asked to clean — and it has never fired. It needs a
+  machine with Files On-Demand actually enabled.
+- **Junctions and symlinks are not tested.** The enumeration skips name surrogates, matching
+  `BfsScanner`, but no test creates one.
+- **The 41 MiB/s throughput hypothesis is unconfirmed** (above).
+- **There is no API endpoint and no UI.** The engine is reachable from `Silt.Core` only. That
+  is the next increment, and it needs the job lifecycle `ScanService` already has.
+
+---
 
 ## 6. Testing destructive operations safely
 

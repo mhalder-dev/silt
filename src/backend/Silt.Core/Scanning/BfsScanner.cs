@@ -267,7 +267,7 @@ public sealed class BfsScanner : IVolumeScanner
     /// already-normalized names to a fully-qualified root, so there is nothing for the
     /// skipped normalization pass to have fixed.
     /// </summary>
-    private static string ToExtendedPath(string path)
+    internal static string ToExtendedPath(string path)
     {
         if (path.StartsWith(@"\\?\", StringComparison.Ordinal))
         {

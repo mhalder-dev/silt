@@ -78,6 +78,7 @@ and there is no release to download.
 | M4 · Cleanup | ✅ Denylist, dry-run, Recycle Bin, capacity refusal |
 | M5 · Treemap | ✅ Squarified, one canvas, spatial-index picking |
 | M6 · Packaging | 🚧 Release pipeline runs and produces a verified 43 MB installer; that installer has not yet been run by a human |
+| v2 · Duplicate finder | 🚧 Engine only — finds identical files without opening most of them; no API and no UI yet |
 
 See [`docs/PLAN.md`](docs/PLAN.md) for the plan of record, the milestone table, and the
 architecture review that shaped it.
@@ -100,7 +101,10 @@ npm --prefix src/frontend install
 npm --prefix src/frontend run dev
 ```
 
-Tests. The frontend suite covers the treemap's geometry — rectangles staying inside their
+Tests. The backend suite covers the scanner against trees of known contents, the safety
+layer's refusals, and the duplicate finder's funnel — the last of those with five mutation-
+checked tests, because two earlier versions of them passed against deliberately broken code.
+The frontend suite covers the treemap's geometry — rectangles staying inside their
 parents, siblings never overlapping, the spatial index agreeing with brute force, and the
 backing store being sized correctly and allocated once — none of which a typecheck or a lint
 can see:
